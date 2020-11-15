@@ -5,7 +5,7 @@ Created on Wed Mar  4 10:35:00 2020
 @author: Frank
 """
 
-import TradingSystemV3
+
 #import re
 #import pickle
 #import os
@@ -31,6 +31,12 @@ import TradingSystemV3
 #        colStr.append(letters[quotient-1])
 #        remainder = remainder%numLetter
 #    return colStr
+
+def indCell(colStr, rowNumber):
+    if type(colStr) is str:
+        return colStr+str(rowNumber)
+    else:
+        return chr(ord('A') + colStr -1)+str(rowNumber)
 
 def getColumnStr(n):
     string = ""
@@ -288,6 +294,7 @@ sht.range('AL37').formula_array = newFormulas[1]
 '''    
     
 if __name__ == '__main__':
+    import TradingSystemV3
     sysObj = TradingSystemV3.TradeSystem('本金账本.xlsx')
     hasTraded, df_lastTasks_traded= sysObj.compareWithLastTasks()
     writeTradedTasks(sysObj, df_lastTasks_traded)
