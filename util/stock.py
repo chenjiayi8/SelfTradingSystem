@@ -6,10 +6,21 @@ Created on Sun Feb 23 21:49:53 2020
 """
 
 import pandas as pd
-import pdpipe as pdp
 from datetime import datetime
 from datetime import timedelta
+import multiprocessing
 from multiprocessing.dummy import Pool as ThreadPool
+import urllib
+import urllib.error as error
+from lxml import html
+import re
+import math
+from socket import timeout
+import numpy as np
+from SelfTradingSystem.util.convert import (
+    fundDateEleToDateStr, dateTimeToDateStr, 
+    )
+from SelfTradingSystem.util.extract import extractBetween
 
 def getHTML(tempUrl, timeLimit=20):
     attempts = 5
@@ -243,6 +254,17 @@ def buildStockNumberStr(stockNumberStr):
             extraStr    = '1'
         stockNumberStr = extraStr + str(stockNumber)
     return stockNumberStr
+
+def buildIndexNumberStr(indexNumberStr):
+    indexNumber = int(indexNumberStr)
+    numDigits = len(str(indexNumber))
+    if numDigits == 6:
+        indexNumberStr = str(indexNumber)
+    elif numDigits < 6:
+        extraLength = 6 - numDigits
+        extraStr    = '0'*extraLength
+        indexNumberStr = extraStr + str(indexNumber)
+    return indexNumberStr
 
 def AMA(df, d1, SLOWSC):
     df['DIR1']= abs(df['收盘价'] - df.shift(periods=d1)['收盘价'])

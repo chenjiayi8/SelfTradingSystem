@@ -9,14 +9,17 @@ Created on Sat Nov 14 23:17:51 2020
 import pandas as pd
 import pdpipe as pdp
 import numpy as np
+import sys
+import traceback
+from dateutil.relativedelta import relativedelta
 from SelfTradingSystem.util.convert import (
     numberToStr, numberToDateStr, dateStrToDateTime,
     getTodayDate, getWeekNumFromDate, getMonthFromDate,
-    getYearFromDate,
+    getYearFromDate, rawStockStrToInt,
     )
 from SelfTradingSystem.util.stock import (
-    getStockHistory, getFundHistory, buildStockNumberStr,
-    checkMomentum, BBI,
+    getStockHistory, getFundHistory, buildIndexNumberStr,
+    checkMomentum, BBI, getStockHistoryV2, buildStockNumberStr
     )
 
 class Subject:
@@ -29,43 +32,68 @@ class Subject:
         self.newContents = []
         self.preConditionedDF = []
         if isStock:
-            self.sheetName = 'S'+name   
+            self.subjectname = 'S'+name   
             self.TCloseStr = '收盘价'
             self.DateStr =  '日期'
         else:
-            self.sheetName = 'F'+name
+            self.subjectname = 'F'+name
             self.TCloseStr = '累计净值'
             self.DateStr   = '净值日期'
-
-        self.setLastUpdatedDateStr(sql)
+            
+        if self.subjectname == 'S000985':
+            df_lastRow = sql.getLastRows('S000985', 50)
+            self.validatedDate = dateStrToDateTime(numberToDateStr(int((df_lastRow.loc[0, '日期']))))
+            for i in range(1, len(df_lastRow)):
+                if str.isnumeric(df_lastRow.loc[i, '名称']):
+                    self.validatedDate = dateStrToDateTime(numberToDateStr(int((df_lastRow.loc[i-1, '日期']))))
+                    break
   
     def subjectToDF(self, sql, numRow=0):
         if numRow == 0:
-            return sql.getDF(self.sheetName)
+            return sql.getDF(self.subjectname)
         else:
-            return sql.getLastRows(self.sheetName, numRow)
+            return sql.getLastRows(self.subjectname, numRow)
     
-    def setLastUpdatedDateStr(self, sql):
-        lastRow = sql.getLastRows(self.sheetName)
+    def setLastUpdatedDate(self, sql):
+        lastRow = sql.getLastRows(self.subjectname)
         lastDate = list(lastRow[self.DateStr])[0]
-        self.lastUpdateDateStr = numberToStr(lastDate)
+        self.lastUpdatedDate = dateStrToDateTime(numberToStr(lastDate))
     
-    def writeUpdatedSheet(self, sql):
+    def writeUpdatedSubject(self, sql):
         if self.resetFlag:
-            self.sht.range('A1').options(index=False).value = self.df
+            Subject.resetSubject(self, sql)
             self.resetFlag = False
-            self.setLastUpdatedDateStr()
+            self.setLastUpdatedDate()
         elif self.hasNewContent:
-            numLastRow = self.sht.range('A1').current_region.last_cell.row
-            self.sht.range(numLastRow+1, 1).value = self.newContents
+            sql.updateSubject(self.subjectname,self.newContents)
             self.newContents = []
             self.hasNewContent = False
-            self.setLastUpdatedDateStr()
+            self.setLastUpdatedDate()
 
     
+    def getValidatedZZQZ(self, ):
+        if self.subjectname == 'S000985':
+            if self.validatedDate < self.lastUpdatedDate:
+                todayDate = getTodayDate()
+                startDate = todayDate - relativedelta(days=30)
+                try:
+                    print("Try to validateZZQZ")
+                    sht_new_df = getStockHistoryV2(buildStockNumberStr('000985'), startDate, todayDate)
+                    sht_new_df['日期'] = sht_new_df['日期'].apply(int)
+                    sht_new_df['股票代码'] = sht_new_df['股票代码'].apply(rawStockStrToInt)
+                    return sht_new_df
+                    print("Finish to validateZZQZ")
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except:
+                    print ("Need assisstance for unexpected error:\n {}".format(sys.exc_info()))
+                    traceBackObj = sys.exc_info()[2]
+                    traceback.print_tb(traceBackObj)
 
+
+    
     @staticmethod                         
-    def updateSheet(subObj, pool=[]):
+    def updateSubject(subObj, pool=[]):
         if subObj.hasNewContent == False:
             if subObj.resetFlag:
                 subObj.sht.clear_contents()
@@ -77,36 +105,31 @@ class Subject:
     #            subObj.df = subObj.df.iloc[::-1].copy().reset_index(drop=True)
     #            subObj.sht.range('A1').options(index=False).value = subObj.df
             else:
-                startDate=dateStrToDateTime(subObj.lastUpdateDateStr)  
-                if startDate < getTodayDate():
+                if subObj.lastUpdatedDate < getTodayDate():
+                    startDate = subObj.lastUpdatedDate
                     if subObj.isStock:
                          sht_new_df = getStockHistory(subObj.name, startDate=startDate, pool=pool)
                     else:
                          diffDays = (getTodayDate() - startDate).days
                          sht_new_df = getFundHistory(subObj.name, rows=diffDays, pool=pool)
                     sht_appended = sht_new_df[sht_new_df[subObj.DateStr].map(dateStrToDateTime) > startDate].copy()
-    #                sht_appended.loc[:, self.DateStr] = sht_appended.loc[:, self.DateStr].apply(numberToDateStr)
                     sht_appended[subObj.DateStr] = sht_appended[subObj.DateStr].apply(numberToDateStr)
-    #                sht_appended = sht_appended[sht_appended[self.DateStr].apply(numberToDateStr)]
-    #                self.df = pd.concat([self.df, sht_appended], sort=False)
-    #                self.df = self.df.reset_index()
-                    subObj.newContents = sht_appended.values.tolist()
+                    subObj.newContents = sht_appended
                     if len(subObj.newContents) > 0:
                         subObj.hasNewContent = True
                     else:
                         subObj.hasNewContent = False
-#                subObj.sht.range(numLastRow+1, 1).value = 
     
     @staticmethod 
-    def resetSheet(subObj, pool=[]):
+    def resetSubject(subObj, pool=[]):
         subObj.resetFlag = True
-        Subject.updateSheet(subObj, pool)
-        subObj.writeUpdatedSheet()
+        Subject.updateSubject(subObj, pool)
+        subObj.writeUpdatedSubject()
    
                
     def preCondition(self, sql):
         if len(self.preConditionedDF) == 0:
-            numLastRow = sql.getNumRows(self.sheetName)
+            numLastRow = sql.getNumRows(self.subjectname)
             maxRows = round(26*30*1.5+1)
             numRow = min([numLastRow, maxRows])
             self.subjectToDFj(numRow)
@@ -247,5 +270,6 @@ if __name__=='__main__':
     from SelfTradingSystem.io.database import Database
     db = 'Resources.db'
     sql =Database(db)
-    stockName = '000985'
+    stockName = buildIndexNumberStr(985)
     obj = Subject(stockName, sql, True)
+    

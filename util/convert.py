@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import time
 import math
 import lxml
+import re
 
 def getYearFromDate(dateStr):
     return dateStrToDateStruc(dateStr).tm_year
@@ -124,3 +125,9 @@ def numberToDateStr(inputNumber):
 def fundDateEleToDateStr(dateEle):
     dateStr = [str(s) for s in dateEle if str(s) != '-']
     return "".join(dateStr)
+
+def rawStockStrToInt(rawStockStr):
+    rawStockStr = re.findall(r'\d', rawStockStr)
+    rawStockStr = ''.join(rawStockStr)
+    return int(rawStockStr)
+    
