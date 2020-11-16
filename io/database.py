@@ -14,6 +14,10 @@ import sqlite3
 from sqlite3 import Error
 import pandas as pd
 import multiprocessing as mp
+# try:
+#     mp.set_start_method('spawn')
+# except:
+#     pass
 import atexit
 import datetime
 import sys
@@ -44,10 +48,10 @@ def callBatchMethod(sql, methodStr):
     return returnCode
 
 class Database(mp.Process):
-    def __init__(self, db, pool):
+    def __init__(self, db):
         super(Database, self).__init__()
         self.db=db
-        self.pool = pool
+        self.pool = mp.get_context("spawn").Pool(8)
         self.tradingHour = 20
         self.batchMethods = {}
         self.batchMethods['updateSubjects'] = self.updateSubjects
@@ -131,31 +135,29 @@ class Database(mp.Process):
         todaydate = getTodayDate()
         nowTime = datetime.datetime.now()
         nowTimeTuple = nowTime.timetuple()
-        if  nowTimeTuple.tm_hour >= 10 and nowTimeTuple.tm_hour < self.tradingHour:
+        if  nowTimeTuple.tm_wday < 6 and nowTimeTuple.tm_hour >= 10\
+            and nowTimeTuple.tm_hour < self.tradingHour:
             print("Start updating loop")
-            hasNewContent = False
-            tradeObjs = []
+            targetObjs = []
             for subjectname in self.subjectnames:
                 subobj = self.objMap[subjectname]
                 if subobj.lastUpdatedDate < todaydate:
-                    tradeObjs.append(subobj)
+                    targetObjs.append(subobj)
             # callBatchMethod(self, 'updateSubjects')
-            self.updateSubjects(tradeObjs)
+            print("Before updateSubjects")
+            targetObjs = self.updateSubjects(targetObjs)
             print("updateSubjects done")
-            for subjectname in self.subjectnames:
-                subObj = self.objMap[subjectname]
-                if not hasNewContent and subObj.hasNewContent:
-                    hasNewContent = True
-            if hasNewContent:
+            tradedObjs = [subobj for subobj in targetObjs if subobj.hasNewContent]
+            if len(tradedObjs) > 0:
                 print("Has new content")
-                self.writeSubjects()
+                self.writeSubjects(tradedObjs)
                 print("writeSubjects done")
         else:
             print("Not updating during target hours")
         # if nowTimeTuple.tm_wday+1 in [6, 7]:
         # callBatchMethod(self, 'validateZZQZ')
         self.validateZZQZ()
-        sleep(60)
+        sleep(60*10)
         print('Exit keepUpdating')
     
     def validateZZQZ(self):
@@ -221,14 +223,17 @@ class Database(mp.Process):
         conn.close()
         self.writing.value == 0
         
-    def updateSubjects(self, tradeObjs=[]):
-        if len(tradeObjs) == 0:
-            tradeObjs = self.tradeObjs
-        for subobj in tradeObjs:
-            print("Working on {}".format(subobj.subjectname))
-            Subject.updateSubject(subobj)
-        # print("Pool to updateSubjects")
-        # self.pool.map(Subject.updateSubject, tradeObjs)
+    def updateSubjects(self, targetObjs=[]):
+        if len(targetObjs) == 0:
+            targetObjs = self.tradeObjs
+        # pool = mp.get_context("spawn").Pool(8)
+        # for subobj in targetObjs:
+        #     print("Working on {}".format(subobj.subjectname))
+        #     Subject.updateSubject(subobj)
+        print("Pool to updateSubjects")
+        targetObjs = self.pool.map(Subject.updateSubject, targetObjs)
+        print("Pool to updateSubjects done")
+        return targetObjs
     
     
     def setLastUpdatedDate(self, subobj, conn):
@@ -236,14 +241,17 @@ class Database(mp.Process):
         lastDate = list(lastRow[subobj.DateStr])[0]
         subobj.lastUpdatedDate = dateStrToDateTime(numberToStr(lastDate))
     
-    def writeSubjects(self):
+    def writeSubjects(self, tradeObjs=[]):
         conn = self.create_connection_for_write()
         self.writing.value == 1
-        for subobj in self.tradeObjs:
+        if len(tradeObjs) == 0:
+            tradeObjs = self.tradeObjs
+        for subobj in tradeObjs:
             if subobj.hasNewContent:
+                # print("Writing on {}".format(subobj.subjectname))
                 self.writeSubjectFromConn(subobj.subjectname, subobj.newContents, conn)
-                self.newContents = []
-                self.hasNewContent = False
+                subobj.newContents = []
+                subobj.hasNewContent = False
                 self.setLastUpdatedDate(subobj, conn)
         self.writing.value == 0
     
@@ -268,6 +276,18 @@ class Database(mp.Process):
             df_new.to_sql(subjectname, con=conn, if_exists='append', index=False)
         
     
+    def insertSubject(self, subjectname):
+        if 'S' in subjectname:
+            isStock = True
+        else:
+            isStock = False
+        subobj = Subject(subjectname[1:], self, isStock=isStock)
+        subobj.resetFlag=True
+        df = Subject.updateSubject(subobj, self.pool)
+        df.to_sql()#TODO
+        subobj.setLastUpdatedDate(sql)
+        pass
+    
     def monitorTradeSystem(self):
         while True:
             print(self.getLastRows('S000985', 5))
@@ -277,9 +297,10 @@ class Database(mp.Process):
 if __name__=='__main__':
     xlsx_path = 'Resources.xlsx'
     db_path = 'Resources.db'
-    pool = mp.get_context("spawn").Pool()
-    sql =Database(db_path, pool)
+    sql = Database(db_path)
     sql.createDB(xlsx_path, db_path)
+    sleep(10)
     print(sql.getLastRows('S000985', 10))
+    sql.start()
 
     

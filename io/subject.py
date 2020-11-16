@@ -59,16 +59,16 @@ class Subject:
         lastDate = list(lastRow[self.DateStr])[0]
         self.lastUpdatedDate = dateStrToDateTime(numberToStr(lastDate))
     
-    def writeUpdatedSubject(self, sql):
-        if self.resetFlag:
-            Subject.resetSubject(self, sql)
-            self.resetFlag = False
-            self.setLastUpdatedDate()
-        elif self.hasNewContent:
-            sql.updateSubject(self.subjectname,self.newContents)
-            self.newContents = []
-            self.hasNewContent = False
-            self.setLastUpdatedDate()
+    # def writeUpdatedSubject(self, sql):
+    #     if self.resetFlag:
+    #         Subject.resetSubject(self, sql)
+    #         self.resetFlag = False
+    #         self.setLastUpdatedDate()
+    #     elif self.hasNewContent:
+    #         sql.updateSubject(self.subjectname,self.newContents)
+    #         self.newContents = []
+    #         self.hasNewContent = False
+    #         self.setLastUpdatedDate()
 
     
     def getValidatedZZQZ(self, ):
@@ -119,12 +119,13 @@ class Subject:
                         subObj.hasNewContent = True
                     else:
                         subObj.hasNewContent = False
+        return subObj
     
     @staticmethod 
     def resetSubject(subObj, pool=[]):
         subObj.resetFlag = True
-        Subject.updateSubject(subObj, pool)
-        subObj.writeUpdatedSubject()
+        return Subject.updateSubject(subObj, pool)
+        # subObj.writeUpdatedSubject()
    
                
     def preCondition(self, sql):
