@@ -74,22 +74,9 @@ def getDaysBetweenDateStrs(dateStr1, dateStr2):
     date2 = dateStrToDateTime(dateStr2)
     return (date1-date2).days
 
-def isnumeric(e):
-    flag = False
-    if e is not None and e != 'None':
-        flag = True
-    if type(e) == float:
-        return not math.isnan(e)
-    if type(e) == str:
-        try:
-            new_e = float(e)
-            if not math.isnan(new_e):
-                return isnumeric(float(e))
-            else:
-                flag = False
-        except:
-            flag = False
-    return flag
+def getStockNumberStr(stockStr):
+    return stockStr[2:]
+
 
 def numberToStr(inputNumber):
     type_input = type(inputNumber)
@@ -127,7 +114,26 @@ def fundDateEleToDateStr(dateEle):
     return "".join(dateStr)
 
 def rawStockStrToInt(rawStockStr):
+    rawStockStr = str(rawStockStr)
     rawStockStr = re.findall(r'\d', rawStockStr)
     rawStockStr = ''.join(rawStockStr)
     return int(rawStockStr)
+
+def rawTextToNumeric(rawText):
+    try:
+        rawText = str(rawText)
+        if ',' in rawText:
+            rawText = rawText.replace(',', '')
+        numeric = 0
+        if '%' in rawText:
+            rawText = rawText.replace('%', '')
+            numeric = float(rawText)
+            numeric = round(numeric/100, 4)
+        elif '.' in rawText:
+            numeric = float(rawText)
+        else:
+            numeric = int(rawText)
+    except:
+        numeric = 0
+    return numeric
     

@@ -13,24 +13,45 @@ Created on Wed Mar  4 10:35:00 2020
 #f = open(resultFile, 'rb')
 #tasks_valided = pickle.load(f)
 #f.close()
+import pandas as pd
+from SelfTradingSystem.util.convert import getTodayDate
 
+def getTargetArea(sht, startCol, endCol=[], startRow=0, endRow=0):
+    if len(endCol) > 0:
+        header = sht.range(startCol+str(1), endCol+str(1)).value
+    else:
+        header = sht.range(startCol+str(1)).value
+    numLastRow_Region = sht.range(startCol+str(1)).current_region.last_cell.row
+    for i in range(numLastRow_Region+1):
+        cellValue = sht.range(startCol+str(i+1)).value
+        if cellValue == None or cellValue == "None" or cellValue == "nan":
+            numLastRow = i
+            break
+    
+    if startRow == 0:
+        startRow = 2
+    elif startRow < 0:
+        startRow += numLastRow + 1
+    
+    if endRow == 0:
+        endRow = numLastRow
+    elif endRow < 0:
+        endRow += numLastRow + 1
+      
+    if len(endCol) > 0:    
+        data =  sht.range(startCol+str(startRow), endCol+str(endRow)).value
+        if numLastRow == 2:
+            data = [data]
+        return pd.DataFrame(data=data, columns=header)
+    else:
+        data =  sht.range(startCol+str(2), startCol+str(endRow)).value
+        return pd.Series(data=data, name=header).to_frame()
 
-
-#def getColumnStr(colNum):
-#    letters = list(map(chr, range(ord('A'), ord('Z')+1)))
-#    numLetter = len(letters)
-#    colStr = []
-#    loopGuard = 10
-#    remainder = colNum
-#    while loopGuard > 0:
-#        loopGuard -= 0
-#        if remainder <= numLetter:
-#            colStr.append(letters[remainder-1])
-#            break
-#        quotient  = remainder//numLetter
-#        colStr.append(letters[quotient-1])
-#        remainder = remainder%numLetter
-#    return colStr
+def sheetToDF(sht):
+    return sht.range('A1').options(pd.DataFrame, 
+                         header=1,
+                         index=False, 
+                         expand='table').value
 
 def indCell(colStr, rowNumber):
     if type(colStr) is str:
@@ -115,7 +136,7 @@ def seperateInd(ind):
 def getInputFromTradedTask(df_row):
     name   = df_row.loc['Name']
     code   = codeToStr(df_row.loc['Code'])
-    time   = TradingSystemV3.getTodayDate()
+    time   = getTodayDate()
     amount = df_row.loc['Amount']
     price  = df_row.loc['成交价']
     remark = df_row.loc['Remark']
@@ -129,7 +150,7 @@ def getInputFromTradedTask(df_row):
 def getInputFromValidTask(df_row):
     name   = df_row.loc['基金名称记录']
     code   = codeToStr(df_row.loc['基金代码记录'])
-    time   = TradingSystemV3.getTodayDate()
+    time   = getTodayDate()
     amount = df_row.loc['锁卖份额']
     money  = df_row.loc['锁买金额']
     price  = df_row.loc['操作价格']
@@ -276,68 +297,3 @@ def writeMomentTasks(sysObj, tasks_valided):
         df_row = tasks_valided.iloc[i].copy()
         excelWriter(sysObj, df_row, True)
     
-'''
- sht = sysObj.wb.sheets['趋势份额']
- formula = sht.range('AK36').formula
- newFormula = formula.replace('36', '37')
- sht.range('AK37').formula = newFormula
- 
- formulas = sht.range('AK36', 'AP36').formula
- type(formulas)
-formulas = formulas[0]
-formulas = list(formulas)
-newFormulas = [s.replace('36', '37') for s in formulas]
-newFormulas = tuple(newFormulas)
-sht.range('AK37', 'AP37').formula = newFormulas
-sht.range('AL37').formula_array = newFormulas[1]
-
-'''    
-    
-if __name__ == '__main__':
-    import TradingSystemV3
-    sysObj = TradingSystemV3.TradeSystem('本金账本.xlsx')
-    hasTraded, df_lastTasks_traded= sysObj.compareWithLastTasks()
-    writeTradedTasks(sysObj, df_lastTasks_traded)
-    print('These traded tasks are written:')
-    print(df_lastTasks_traded.to_string())
-    sysObj.calculate()
-    exitCode, tasks_valided = sysObj.calculateForMomentumShares() 
-    writeMomentTasks(sysObj, tasks_valided)
-    sysObj.calculate()
-#    hasTraded, df_lastTasks_traded= sysObj.compareWithLastTasks()
-#    for in in range(len(tasks_valided)):
-#    i = 1
-#    df_row = df_lastTasks_traded.iloc[i].copy()
-#    input_list = getInputFromTradedTask(df_row)
-##    input_list = getInputFromValidTask(df_row)
-#    excelWriter(sysObj, df_row)
-    
-#    writeTradedTasks(sysObj, df_lastTasks_traded)
-#    df_lastTasks_traded.loc[2,'Name'] = '证券ETF'
-#    df_lastTasks_traded.loc[6,'Code'] = 512500.0
-#    df_lastTasks_traded.loc[6,'Amount'] = -1000
-#    df_lastTasks_traded.loc[6,'成交价'] = 1.060
-#    df_lastTasks_traded.loc[6,'Remark'] = '普通网格'
-
-#    df_lastTasks_traded = df_lastTasks_traded.sort_values(by=['Amount'])
-#    i = 0
-#    df_lastTasks_traded.loc[7,'Remark'] = "行业轮动"
-#    df_lastTasks_traded.loc[7,'Name'] = "军工ETF"
-#    for i in range(len(df_lastTasks_traded)):
-#        df_row = df_lastTasks_traded.iloc[i].copy()
-#        excelWriter(sysObj, df_row)
-#    input_list = getInputFromTradedTask(df_row)
-#    sheetStrs = getTargetSheetStr(sysObj, input_list)
-#    sheetWriter(sysObj, sheetStrs[0], input_list)
-    
-#    sysObj.calculate()
-#    sheet_preorder = sysObj.wb.sheets['Preorders']
-#    minor_sheetNames = sysObj.sheetNames
-#    df_preorder = sysObj.getTargetArea(sheet_preorder, 'A', 'I')
-#    df_preorder['成交价'] = 0
-    
-#    for i in range(len(df_preorder)):
-#        df_row = df_preorder.iloc[i].copy()
-#        input_list = getInputFromTradedTask(df_row)
-#        sheetStr = getTargetSheetStr(sysObj, input_list)
-#        print("Target sheet {} is in main sheetbook:{} ".format(sheetStr, checkSheetNameInBook(sheetStr, minor_sheetNames)))

@@ -15,12 +15,16 @@ from dateutil.relativedelta import relativedelta
 from SelfTradingSystem.util.convert import (
     numberToStr, numberToDateStr, dateStrToDateTime,
     getTodayDate, getWeekNumFromDate, getMonthFromDate,
-    getYearFromDate, rawStockStrToInt,
+    getYearFromDate, rawStockStrToInt, rawTextToNumeric,
     )
 from SelfTradingSystem.util.stock import (
     getStockHistory, getFundHistory, buildIndexNumberStr,
-    checkMomentum, BBI, getStockHistoryV2, buildStockNumberStr
+    checkMomentum, BBI, getStockHistoryV2, buildStockNumberStr,
+    getZZQZLatestMonth,
     )
+
+def updateRelativeMomentumWrapper(input_instance):
+    return Subject.updateRelativeMomentumV2(*input_instance)
 
 class Subject:
     def __init__(self, name, sql, isStock=True):
@@ -93,39 +97,62 @@ class Subject:
 
     
     @staticmethod                         
-    def updateSubject(subObj, pool=[]):
-        if subObj.hasNewContent == False:
-            if subObj.resetFlag:
-                subObj.sht.clear_contents()
-                if subObj.isStock:
-                    subObj.df = getStockHistory(subObj.name, pool=pool)
+    def updateSubject(subobj, pool=[]):
+        try:
+            if subobj.hasNewContent == False:
+                if subobj.resetFlag:
+                    if subobj.isStock:
+                        df = getStockHistory(subobj.name, pool=pool)
+                    else:
+                        df = getFundHistory(subobj.name, pool=pool)
+                    df.loc[:, subobj.DateStr] = df.loc[:, subobj.DateStr].apply(numberToDateStr)
+                    subobj.newContents = df
+        #            subobj.df = subobj.df.iloc[::-1].copy().reset_index(drop=True)
+        #            subobj.sht.range('A1').options(index=False).value = subobj.df
                 else:
-                    subObj.df = getFundHistory(subObj.name, pool=pool)
-                subObj.df.loc[:, subObj.DateStr] = subObj.df.loc[:, subObj.DateStr].apply(numberToDateStr)
-    #            subObj.df = subObj.df.iloc[::-1].copy().reset_index(drop=True)
-    #            subObj.sht.range('A1').options(index=False).value = subObj.df
-            else:
-                if subObj.lastUpdatedDate < getTodayDate():
-                    startDate = subObj.lastUpdatedDate
-                    if subObj.isStock:
-                         sht_new_df = getStockHistory(subObj.name, startDate=startDate, pool=pool)
+                    if subobj.lastUpdatedDate < getTodayDate():
+                        startDate = subobj.lastUpdatedDate
+                        if subobj.isStock:
+                            if subobj.subjectname != 'S000985':
+                                sht_new_df = getStockHistory(subobj.name, startDate=startDate, pool=pool)
+                            else:
+                                sht_new_df = getZZQZLatestMonth()
+                        else:
+                             diffDays = (getTodayDate() - startDate).days
+                             sht_new_df = getFundHistory(subobj.name, rows=diffDays, pool=pool)
+                        sht_appended = sht_new_df[sht_new_df[subobj.DateStr].map(dateStrToDateTime) > startDate].copy()
+                        sht_appended[subobj.DateStr] = sht_appended[subobj.DateStr].apply(numberToDateStr)
+                        subobj.newContents = sht_appended
+                if len(subobj.newContents) > 0:
+                    subobj.hasNewContent = True
+                    if subobj.isStock:
+                        targetColumns = ['收盘价', '成交量(股)','成交金额(元)',\
+                                         '开盘价','日期', '涨跌幅(%)',\
+                                         '最低价','涨跌额','涨跌幅','最高价']
                     else:
-                         diffDays = (getTodayDate() - startDate).days
-                         sht_new_df = getFundHistory(subObj.name, rows=diffDays, pool=pool)
-                    sht_appended = sht_new_df[sht_new_df[subObj.DateStr].map(dateStrToDateTime) > startDate].copy()
-                    sht_appended[subObj.DateStr] = sht_appended[subObj.DateStr].apply(numberToDateStr)
-                    subObj.newContents = sht_appended
-                    if len(subObj.newContents) > 0:
-                        subObj.hasNewContent = True
-                    else:
-                        subObj.hasNewContent = False
-        return subObj
+                        targetColumns = ['单位净值', '累计净值', '日增长率']
+                    pipeline  = pdp.ApplyByCols(targetColumns[0], rawTextToNumeric, targetColumns[0], drop=False)
+                    for column in targetColumns[1:]:
+                        if column in subobj.newContents.columns:
+                            pipeline  += pdp.ApplyByCols(column, rawTextToNumeric, column, drop=False)
+                    if subobj.subjectname == 'S000985':
+                        pipeline  += pdp.ApplyByCols('股票代码', rawStockStrToInt, '股票代码', drop=False)
+                    subobj.newContents = pipeline(subobj.newContents)
+                else:
+                    subobj.hasNewContent = False
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            print ("Need assisstance at {} for unexpected error:\n {}".format(subobj.subjectname, sys.exc_info()))
+            traceBackObj = sys.exc_info()[2]
+            traceback.print_tb(traceBackObj)
+        return subobj
     
     @staticmethod 
-    def resetSubject(subObj, pool=[]):
-        subObj.resetFlag = True
-        return Subject.updateSubject(subObj, pool)
-        # subObj.writeUpdatedSubject()
+    def resetSubject(subobj, pool=[]):
+        subobj.resetFlag = True
+        return Subject.updateSubject(subobj, pool)
+        # subobj.writeUpdatedSubject()
    
                
     def preCondition(self, sql):
@@ -171,8 +198,8 @@ class Subject:
         return month_df
     
     @staticmethod    
-    def updateMomentum(subObj):
-        temp_df        = subObj.preConditionedDF
+    def updateMomentum(subobj):
+        temp_df        = subobj.preConditionedDF
         temp_df_week   = Subject.getWeekDF(temp_df.copy())
         temp_df_month  = Subject.getMonthDF(temp_df.copy())
         dm_BBI, dm_MACD = checkMomentum(temp_df.copy())
@@ -200,11 +227,11 @@ class Subject:
         return df
     
     @staticmethod    
-    def updateRelativeMomentum(subObj, baseObj):
-        if subObj is not baseObj:
-            temp_df_sub        = subObj.preConditionedDF.copy()
+    def updateRelativeMomentum(subobj, baseObj):
+        if subobj is not baseObj:
+            temp_df_sub        = subobj.preConditionedDF.copy()
             temp_df_base       = baseObj.preConditionedDF.copy()
-            temp_date_sub  = dateStrToDateTime(temp_df_sub[subObj.DateStr].iloc[-1])
+            temp_date_sub  = dateStrToDateTime(temp_df_sub[subobj.DateStr].iloc[-1])
             temp_date_base = dateStrToDateTime(temp_df_base[baseObj.DateStr].iloc[-1])
             if temp_date_sub > temp_date_base:
                 daysDiff = (temp_date_sub - temp_date_base).days - 2
@@ -217,25 +244,25 @@ class Subject:
             TClose_final = TClose_sub/TClose_base
             temp_df  = Subject.setTClose(temp_df_sub, TClose_final)
         else:
-            temp_df        = subObj.preConditionedDF
+            temp_df        = subobj.preConditionedDF
         temp_df_week   = Subject.getWeekDF(temp_df.copy())
         df_BBI = BBI(temp_df_week)
         TClose_week = Subject.getTClose(temp_df_week.tail(8))
         result_list = np.ndarray.tolist(TClose_week/df_BBI.tail(8)['BBI'].values-1)[::-1]
-        temp_df_sub_week   = Subject.getWeekDF(subObj.preConditionedDF.copy())
+        temp_df_sub_week   = Subject.getWeekDF(subobj.preConditionedDF.copy())
         TClose_sub  = Subject.getTClose(temp_df_sub_week.tail(2))
         week_percent = TClose_sub[-1]/TClose_sub[-2]-1
         result_list.insert(0, week_percent)
         return result_list
     
     @staticmethod    
-    def updateRelativeMomentumV2(subObj, baseObj):
+    def updateRelativeMomentumV2(subobj, baseObj):
         N = 12
         maxRows = 10
-        temp_df_sub        = subObj.preConditionedDF.copy()
-        if subObj is not baseObj:
+        temp_df_sub        = subobj.preConditionedDF.copy()
+        if subobj is not baseObj:
             temp_df_base       = baseObj.preConditionedDF.copy()
-#            temp_date_sub  = dateStrToDateTime(temp_df_sub[subObj.DateStr].iloc[-1])
+#            temp_date_sub  = dateStrToDateTime(temp_df_sub[subobj.DateStr].iloc[-1])
 #            temp_date_base = dateStrToDateTime(temp_df_base[baseObj.DateStr].iloc[-1])
 #            if temp_date_sub > temp_date_base:
 #                daysDiff = (temp_date_sub - temp_date_base).days - 2
@@ -248,7 +275,7 @@ class Subject:
             TClose_final = TClose_sub/TClose_base
             temp_df  = Subject.setTClose(temp_df_sub.copy(), TClose_final)
         else:
-            temp_df        = subObj.preConditionedDF
+            temp_df        = subobj.preConditionedDF
         lastRows= len(temp_df) - 1
         indexList = sorted(list(range(lastRows,0,-1*N)))
         
@@ -260,7 +287,7 @@ class Subject:
         TClose_week = Subject.getTClose(temp_df_every_N_days.iloc[-8::])
         TClose_week_min_1 = Subject.getTClose(temp_df_every_N_days.iloc[-9:-1])
         result_list = np.ndarray.tolist(TClose_week/TClose_week_min_1-1)[::-1]
-#        temp_df_sub_week   = Subject.getWeekDF(subObj.preConditionedDF.copy())
+#        temp_df_sub_week   = Subject.getWeekDF(subobj.preConditionedDF.copy())
         temp_df_sub_every_N_days   = temp_df_sub.copy().iloc[indexList].copy().reset_index(drop=True)
         TClose_sub  = Subject.getTClose(temp_df_sub_every_N_days.tail(2))
         week_percent = TClose_sub[-1]/TClose_sub[-2]-1

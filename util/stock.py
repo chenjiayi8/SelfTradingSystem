@@ -231,7 +231,7 @@ def getStockHistory(stockNumberStr, startDate=datetime.strptime('19990101', "%Y%
             task = list(zip([stockNumberStr]*4, [y]*4, seasons))
             task = [list(t) for t in task]
             tasks += task
-        if isinstance(pool, multiprocessing.pool.ThreadPool):
+        if type(pool) is not list:
             results = pool.map(getStockHistroyFrom163, tasks)
         else:
             results = [getStockHistroyFrom163(task) for task in tasks]

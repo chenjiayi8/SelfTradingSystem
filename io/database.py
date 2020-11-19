@@ -47,11 +47,11 @@ def callBatchMethod(sql, methodStr):
             returnCode = -1
     return returnCode
 
-class Database(mp.Process):
+class Database():
     def __init__(self, db):
-        super(Database, self).__init__()
         self.db=db
-        self.pool = mp.get_context("spawn").Pool(8)
+        # self.pool = mp.get_context("spawn").Pool(8)
+        # self.pool = mp.dummy.Pool(8)
         self.tradingHour = 20
         self.batchMethods = {}
         self.batchMethods['updateSubjects'] = self.updateSubjects
@@ -94,7 +94,7 @@ class Database(mp.Process):
         try:
             connection = sqlite3.connect(self.db, isolation_level=None, timeout=10)
             atexit.register(connection.close)
-            print("Connection to SQLite DB for read successful")
+            # print("Connection to SQLite DB for read successful")
         except Error as e:
             print(f"The error '{e}' occurred")
         return connection
@@ -152,39 +152,41 @@ class Database(mp.Process):
                 print("Has new content")
                 self.writeSubjects(tradedObjs)
                 print("writeSubjects done")
+            callBatchMethod(self, 'validateZZQZ')
         else:
             print("Not updating during target hours")
-        # if nowTimeTuple.tm_wday+1 in [6, 7]:
-        # callBatchMethod(self, 'validateZZQZ')
-        self.validateZZQZ()
+
+        # self.validateZZQZ()
         sleep(60*10)
         print('Exit keepUpdating')
     
     def validateZZQZ(self):
-        subobj = self.objMap['S000985']
+        subjectname = 'S000985'
+        subobj = self.objMap[subjectname]
         if subobj.validatedDate < subobj.lastUpdatedDate:
             df = subobj.getValidatedZZQZ()
-            subjectname = 'S000985'
+            # print('ValidatedZZQZ:')
+            # print(df)
             df_lastRow = self.getLastRows(subjectname, 20)
             conn = self.create_connection_for_write()
             self.writing.value == 1
             cur = conn.cursor()
             for i in range(len(df_lastRow)):
-                if str.isnumeric(df_lastRow.loc[i, '名称']):
+                if df_lastRow.loc[i, '名称'] in [0.0, '0.0', '0']:
                     targetRow = df[df['日期'] == df_lastRow.loc[i, '日期']]
                     if len(targetRow)>0:
-                        sql  = 'Update ' + subjectname + '\n'
-                        sql += 'SET '
+                        sqlStr  = 'Update ' + subjectname + '\n'
+                        sqlStr += 'SET '
                         for column in df_lastRow.columns:
                             if column == '名称':
-                                sql += column + '=\'' +\
+                                sqlStr += column + '=\'' +\
                                     str(list(targetRow[column])[0]) +'\','
                             else:
-                                sql += column + '=' + str(list(targetRow[column])[0]) +','
-                        sql = sql[:-1] + '\n'
-                        sql += 'WHERE 日期='+str(list(targetRow['日期'])[0])
-                        # print(sql)
-                        cur.execute(sql)
+                                sqlStr += column + '=' + str(list(targetRow[column])[0]) +','
+                        sqlStr = sqlStr[:-1] + '\n'
+                        sqlStr += 'WHERE 日期='+str(list(targetRow['日期'])[0])
+                        # print(sqlStr)
+                        cur.execute(sqlStr)
         self.writing.value == 0
 
     
@@ -203,17 +205,21 @@ class Database(mp.Process):
         return list(numRow)[0][0]
     
     def getLastRowsFromConn(self, subjectname, conn, numRow=1):
-        df = pd.read_sql_query("SELECT * from " + subjectname +\
-                               " ORDER BY rowid DESC LIMIT " + str(numRow), conn)
-        df = df.iloc[::-1].reset_index(drop=True)
+        if subjectname in self.subjectnames:
+            df = pd.read_sql_query("SELECT * from " + subjectname +\
+                                   " ORDER BY rowid DESC LIMIT " + str(numRow), conn)
+            df = df.iloc[::-1].reset_index(drop=True)
+        else:
+            df = []
+            print("{} is not in the database".format(subjectname))
         return df
     
     def getLastRows(self, subjectname, numRow=1):
-        print('Enter getLastRows')
+        # print('Enter getLastRows')
         conn = self.create_connection_for_read()
         df = self.getLastRowsFromConn(subjectname, conn, numRow=numRow)
         conn.close()
-        print('Exit getLastRows')
+        # print('Exit getLastRows')
         return df
     
     def resetSubject(self, subjectname, df):
@@ -226,13 +232,16 @@ class Database(mp.Process):
     def updateSubjects(self, targetObjs=[]):
         if len(targetObjs) == 0:
             targetObjs = self.tradeObjs
-        # pool = mp.get_context("spawn").Pool(8)
+        pool = mp.get_context("spawn").Pool(8)
+        # pool = mp.dummy.Pool(8)
+        # targetObjs_temp = []
         # for subobj in targetObjs:
         #     print("Working on {}".format(subobj.subjectname))
-        #     Subject.updateSubject(subobj)
+        #     targetObjs_temp.append(Subject.updateSubject(subobj))
         print("Pool to updateSubjects")
-        targetObjs = self.pool.map(Subject.updateSubject, targetObjs)
+        targetObjs = pool.map(Subject.updateSubject, targetObjs)
         print("Pool to updateSubjects done")
+        # targetObjs = targetObjs_temp
         return targetObjs
     
     
@@ -256,12 +265,12 @@ class Database(mp.Process):
         self.writing.value == 0
     
     def writeSubject(self, subjectname, df):
-        print('Enter appendSubject')
+        # print('Enter appendSubject')
         conn = self.create_connection_for_write()
         self.writing.value == 1
         self.writeSubjectFromConn(subjectname, df, conn)
         self.writing.value == 1
-        print('Exit appendSubject')
+        # print('Exit appendSubject')
         
     def writeSubjectFromConn(self, subjectname, df, conn):
         DateStr = self.objMap[subjectname].DateStr
@@ -277,16 +286,21 @@ class Database(mp.Process):
         
     
     def insertSubject(self, subjectname):
+        if subjectname in self.subjectnames:
+            return
         if 'S' in subjectname:
             isStock = True
         else:
             isStock = False
         subobj = Subject(subjectname[1:], self, isStock=isStock)
         subobj.resetFlag=True
-        df = Subject.updateSubject(subobj, self.pool)
-        df.to_sql()#TODO
-        subobj.setLastUpdatedDate(sql)
-        pass
+        # pool = mp.get_context("spawn").Pool(8)
+        pool = mp.dummy.Pool(8)
+        subobj = Subject.updateSubject(subobj, pool=pool)
+        self.resetSubject(subjectname, subobj.newContents)
+        subobj.setLastUpdatedDate(self)
+        self.subjectnames.append(subjectname)
+        self.objMap[subjectname] = subobj
     
     def monitorTradeSystem(self):
         while True:
@@ -295,12 +309,24 @@ class Database(mp.Process):
             
 
 if __name__=='__main__':
-    xlsx_path = 'Resources.xlsx'
+    # xlsx_path = 'Resources.xlsx'
     db_path = 'Resources.db'
     sql = Database(db_path)
-    sql.createDB(xlsx_path, db_path)
-    sleep(10)
+    # sql.createDB(xlsx_path, db_path)
     print(sql.getLastRows('S000985', 10))
-    sql.start()
-
+    sleep(5)
+    # sql.run()
+    sleep(5)
+    # from SelfTradingSystem.io.subject import Subject
+    # from multiprocessing.dummy import Pool as ThreadPool
+    print(sql.getLastRows('S000985', 10))
+    # print('-'*20)
+    # subjectname = 'S000688'
+    # print("Try to insert {}".format(subjectname))
+    # subobj = Subject(subjectname[1:], sql, isStock=True)
+    # pool = ThreadPool(8)
+    # subobj.resetFlag=True
+    # pool = mp.dummy.Pool(8)
+    # subobj = Subject.updateSubject(subobj, pool=pool)
+    # sql.insertSubject(subjectname)
     
