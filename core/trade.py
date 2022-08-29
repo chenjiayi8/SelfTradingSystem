@@ -15,11 +15,15 @@ methods:
 3. calculate week / month momentum
 4. write momentums to sheet menu for further usage
 
+
+logs:
+    25/01/2022: Trade and HuataiPlatform check credit and cash to confirm and make orders
+
 """
 #import modin.pandas as pd
-import sys
-sys.path.append('D:\\LinuxWorkFolder\\TUD\\Python\\Library')
-
+#import sys
+#sys.path.append('D:\\LinuxWorkFolder\\TUD\\Python\\Library')
+import pywinauto
 import os
 # from addLibraries import Helper
 import xlwings as xw
@@ -27,19 +31,20 @@ from lxml import html
 import time
 from datetime import datetime
 from datetime import timedelta
+# import subprocess
 #import pytz
 #from dateutil.relativedelta import relativedelta
 # import multiprocessing
-from multiprocessing.dummy import Pool as ThreadPool
+# from multiprocessing.dummy import Pool as ThreadPool
 # import re
 # import math
-import itertools
+# import itertools
 import pandas as pd
 import pdpipe as pdp
 #import autopy
-import subprocess
+# import subprocess
 # from socket import timeout
-import numpy as np
+# import numpy as np
 #from addLibraries import Helper
 from inspect import currentframe, getframeinfo
 from pandas.core.common import SettingWithCopyError
@@ -48,64 +53,117 @@ from dateutil.relativedelta import relativedelta
 # import ExcelHelper
 import tabulate as tb
 # from SmartQ_PythonV2 import SmartQ_Python, dfToImg
-from SelfTradingSystem.io.subject import Subject, updateRelativeMomentumWrapper
+# from SelfTradingSystem.io.subject import Subject, updateRelativeMomentumWrapper
 from SelfTradingSystem.util.stock import (
-    getStock, getFund, getStocks, getHTML,
-    BBI, MACD, MAs, AMAs,
+    getStock, getHTML, getFundLatest, getStocksBatchFromTencent,
+    BBI, MAs, AMAs, getStocksBatch, getFund, getFundLatestBatchFromTencent
     )
 from SelfTradingSystem.util.others import (
-    round_up, round_down, getLastTradedTime,
+    getLastTradedTime, isSameDate,
     isnumeric, mergeImg, sleep
     )
 from SelfTradingSystem.io.excel import (
-    sheetToDF, indCell, getColumnStr, getTargetArea,
-    writeTradedTasks, writeMomentTasks,
+    sheetToDF, indCell, getTargetArea, removeMargin, dfToDatabaseDF,
+    updateTradedTasks, writeMomentTasks, getColumnStr,
     )     
 
 from SelfTradingSystem.util.convert import (
-    numberToStr, numberToDateStr, dateStrToDateTime,
-    getTodayDate, getWeekNumFromDate, getMonthFromDate,
-    getYearFromDate, rawStockStrToInt, rawTextToNumeric,
+    numberToStr, numberToDateStr, getTodayDate, numberToDateTime,
     getStockNumberStr, dateTimeToDateStr, getTomorrowDateStr,
-    getTodayDateStr, getDeltaDateStr, getNowTimeStr,
-    getDaysBetweenDateStrs, getTomorrowDate
+    getTodayDateStr, getDeltaDateStr, getDaysBetweenDateStrs,
+    getTomorrowDate, dateStrToDateTime, convertShtToDB,
     )
 from SelfTradingSystem.core.strategy import (
     calculateForMomentumShare,
 )
-from SelfTradingSystem.util.remindMe import sendEmail
+from SelfTradingSystem.util.remindMe import sendEmailBatch as sendEmail
 from SelfTradingSystem.io.database import Database
+from SelfTradingSystem.core.operation import dfToImg, strToImg
+# from SelfTradingSystem.util.stock import getFundLatest
 
+class OrderDatabase(Database):
+    def __init__(self, db):
+        self.db=db
+        self.setSubjectNames()
+        import multiprocessing as mp
+        self.writing = mp.Value('i', 0)
+        
+    def getValue(self, sheetName, colStr, rowNum):
+        value = ''
+        with self.create_connection_for_read() as conn:
+            sqlStr = 'SELECT {} from {} where rowid = {}'.\
+            format(colStr, sheetName,  rowNum)
+            cur = conn.cursor()
+            cur.execute(sqlStr)
+            value = cur.fetchall()
+            return value[0][0]
+        return value
+    
+        
 class Trade:
-    def __init__(self, xlsxName, sql):
+    def __init__(self, xlsxName, sql=[],margin_buying_disabled=False):
         self.xlsxName = xlsxName
         self.sql = sql
-        self.wb = xw.Book(xlsxName)
-        self.pool = ThreadPool(20)
+        self.pywinauto_app = pywinauto.application.Application
+        self.db_sql  = OrderDatabase('本金账本.db')
+        self.WBInitialised = False
+        # self.pool = ThreadPool(4)
+        self.totalValueFromImg = 0
+        self.totalValueFromSht = 0
+        self.successfulTrading = -1
+        self.credit_account = {}
         self.msg = []
-        self.imgs = []
+        self.imgDict = {}
         self.imgPath = ''
-        self.sheetNames = [self.wb.sheets[s].name for s in range(self.wb.sheets.count)]
-        self.shf_config = self.wb.sheets['Menu']
-        self.s_Str = 'B'
-        self.f_str = 'F'
-        self.row_num = 12
-        self.numRowLastStock = self.shf_config.range(indCell(self.s_Str, 1)).current_region.last_cell.row
-        self.numRowLastFund = self.shf_config.range(indCell(self.f_str, 1)).current_region.last_cell.row
-        self.momentumMaps = []
-        for r in range(12,self.numRowLastStock+1):
-            if self.shf_config.range(indCell(self.s_Str, r)).value != None:
-                self.momentumMaps.append(chr(ord(self.s_Str)+2)+str(r))
-        for r in range(12,self.numRowLastFund+1):
-            if self.shf_config.range(indCell(self.f_str, r)).value != None:
-                self.momentumMaps.append(chr(ord(self.f_str)+2)+str(r))
-        self.stockNumberStrs = [numberToStr(self.shf_config.range(indCell(self.s_Str, r)).value) for r in range(12, self.numRowLastStock+1) if self.shf_config.range(indCell(self.s_Str, r)).value != None ]
-        self.fundNumberStrs = [numberToStr(self.shf_config.range(indCell(self.f_str, r)).value) for r in range(12, self.numRowLastFund+1) if self.shf_config.range(indCell(self.f_str, r)).value != None ]
-        
+        self.margin_buying_disabled=margin_buying_disabled
+        self.logFile = os.path.join(os.getcwd(), getTodayDateStr()+'.txt')
+        self.create_log_file()
+ 
+    def create_log_file(self):
+        if not os.path.isfile(self.logFile):
+            with open(self.logFile, 'a'):  # touch file
+                os.utime(self.logFile, None)
+                
+    def write_log(self, msg):
+        print(msg)
+        try:
+            if os.path.isfile(self.logFile):
+                with open(self.logFile, 'a+') as f:
+                    f.write('{}\n'.format(msg))
+        except Exception:
+            pass    
+ 
+    def initialiseWB(self):
+        if len(self.xlsxName) > 0 and not self.WBInitialised:
+            self.wb = xw.Book(self.xlsxName)
+            self.write_log("Load xlsx file done")
+            self.sheetNames = [self.wb.sheets[s].name for s in range(self.wb.sheets.count)]
+            self.shf_config = self.wb.sheets['Menu']
+            self.s_Str = 'B'
+            self.f_str = 'F'
+            self.row_num = 12
+            self.numRowLastStock = self.shf_config.range(indCell(self.s_Str, 1)).current_region.last_cell.row
+            self.numRowLastFund = self.shf_config.range(indCell(self.f_str, 1)).current_region.last_cell.row
+            self.momentumMaps = []
+            # self.momentumNameMaps = []
+            for r in range(12,self.numRowLastStock+1):
+                if self.shf_config.range(indCell(self.s_Str, r)).value != None:
+                    self.momentumMaps.append(chr(ord(self.s_Str)+2)+str(r))
+                    # self.momentumNameMaps.append(self.shf_config.range(indCell(chr(ord(self.s_Str)+1), r)).value)
+            for r in range(12,self.numRowLastFund+1):
+                if self.shf_config.range(indCell(self.f_str, r)).value != None:
+                    self.momentumMaps.append(chr(ord(self.f_str)+2)+str(r))
+                    # self.momentumNameMaps.append(self.shf_config.range(indCell(chr(ord(self.f_str)+1), r)).value)
+            self.stockNumberStrs = [numberToStr(self.shf_config.range(indCell(self.s_Str, r)).value) for r in range(12, self.numRowLastStock+1) if self.shf_config.range(indCell(self.s_Str, r)).value != None ]
+            self.fundNumberStrs = [numberToStr(self.shf_config.range(indCell(self.f_str, r)).value) for r in range(12, self.numRowLastFund+1) if self.shf_config.range(indCell(self.f_str, r)).value != None ]
+            self.WBInitialised = True
 
     def initialSubjects(self):
-        self.tradeObjs = self.sql.objMap.items()
-        self.objMap = self.sql.objMap
+        self.initialiseWB()
+        targetSubjectNames = [ 'S' + subname for  subname in self.stockNumberStrs] + \
+                 [ 'F' + subname for  subname in self.fundNumberStrs]
+        self.tradeObjs = [ self.sql.objMap[subname] for subname in targetSubjectNames]
+        self.objMap = dict(zip(targetSubjectNames, self.tradeObjs))
             
     def atWeekend(self):
         nowTime = time.localtime()
@@ -128,59 +186,74 @@ class Trade:
             return False
 
 
-
-        
     def updateMomentums(self):
-        for obj in self.tradeObjs:
-            obj.preCondition()
-        momentum_results = self.pool.map(Subject.updateMomentum, self.tradeObjs)
-#        self.momentum_results = []
+        df = self.sql.getDF('Menu')
+        df.index = df['代码']
         for i in range(len(self.tradeObjs)):
-#            self.momentum_results.append(Subject.updateMomentum(self.tradeObjs[i]))
-            self.shf_config.range(self.momentumMaps[i]).value = momentum_results[i]
+            subjectname = self.tradeObjs[i].subjectname
+            cellIdx = self.momentumMaps[i]
+            momentum_result = df.loc[subjectname, '趋势']
+            if len(momentum_result) > 0:
+                self.shf_config.range(cellIdx).value = momentum_result
             
     def updateRelativeMomentums(self):
-        for obj in self.tradeObjs:
-            obj.preCondition()
-        baseObj = self.objMap['S000985']
-        inputs = [[subObj, baseObj] for subObj in self.tradeObjs]
-        momentum_results = self.pool.map(updateRelativeMomentumWrapper, inputs)
-#        momentum_results = []
+        df = self.sql.getDF('Menu')
+        df.index = df['代码']
+        columns = ['N天涨幅','T','T-1','T-2','T-3','T-4','T-5','T-6','T-7']
         shf = self.wb.sheets['趋势']
         for i in range(len(self.tradeObjs)):
-#            momentum_results.append(Subject.updateRelativeMomentumV2(self.tradeObjs[i], baseObj))
-            shf.range('V'+str(i+2)).value = momentum_results[i]      
+            subjectname = self.tradeObjs[i].subjectname
+            momentum_result = list(df.loc[subjectname, columns])
+            shf.range('V'+str(i+2)).value = momentum_result 
             
     def updateStockSheetLive(self):
         sht_stockInfo = self.wb.sheets['股票查询']
         numRowsStock = sht_stockInfo.range('A1').current_region.last_cell.row
-        endRowStr = 'A'+str(numRowsStock)
-        endRowStr2 = 'C'+str(numRowsStock)
-        tasks = sht_stockInfo.range('A2', endRowStr).value
-#        results = []
-#        for task in tasks:
-#            results.append(getStock(task))
-        
-#        results = self.pool.map(getStock, tasks)
-        results = getStocks(tasks)
-        sht_stockInfo.range('C2', endRowStr2).value = results
+        tasks = sht_stockInfo.range('A2', 'A'+str(numRowsStock)).value
+        tasks = [task for task in tasks if task is not None]
+        numRowsStock = len(tasks)+1
+        results = getStocksBatch(tasks)
+        sht_stockInfo.range('C2',  'C'+str(numRowsStock)).value = results
         updatedTime =  [[time.strftime("%d/%m/%Y, %H:%M:%S")]]*(numRowsStock-1)
         sht_stockInfo.range('AJ2').value = updatedTime      
             
+    def updateStockSheetLiveFromTencent(self):
+        sht_stockInfo = self.wb.sheets['股票查询']
+        numRowsStock = sht_stockInfo.range('A1').current_region.last_cell.row
+        tasks = sht_stockInfo.range('A2', 'A'+str(numRowsStock)).value
+        tasks = [task for task in tasks if task is not None]
+        numRowsStock = len(tasks)+1
+        results = getStocksBatchFromTencent(tasks)
+        sht_stockInfo.range('C2',  'C'+str(numRowsStock)).value = results
+        updatedTime =  [[time.strftime("%d/%m/%Y, %H:%M:%S")]]*(numRowsStock-1)
+        sht_stockInfo.range('AJ2').value = updatedTime      
+        
     def updateFundSheetLive(self):
         sht_fundInfo = self.wb.sheets['净值查询']
         numRows = sht_fundInfo.range('A1').current_region.last_cell.row
         endRowStr = 'A'+str(numRows)
         tasks = sht_fundInfo.range('A2', endRowStr).value
         tasks = [numberToStr(task) for task in tasks]
-#        results = []
-#        for task in tasks:
-#            results.append(getFund(task))
-        results = self.pool.map(getFund, tasks)
-        results = list(itertools.chain(*results))
+        results = getFundLatest(tasks)
         for i in range(2, numRows+1):
-            if len(results[i-2]) > 3:
-                sht_fundInfo.range('C'+str(i)).value = results[i-2]
+            result = results[i-2]
+            if tasks[i-2] in ['162411']:
+                result = getFund(tasks[i-2])[0]
+            if len(result) > 3:
+                sht_fundInfo.range('C'+str(i)).value = result
+                sht_fundInfo.range('J'+str(i)).value = time.strftime("%d/%m/%Y, %H:%M:%S")
+                
+    def updateFundSheetLiveFromTencent(self):
+        sht_fundInfo = self.wb.sheets['净值查询']
+        numRows = sht_fundInfo.range('A1').current_region.last_cell.row
+        endRowStr = 'A'+str(numRows)
+        tasks = sht_fundInfo.range('A2', endRowStr).value
+        tasks = [numberToStr(task) for task in tasks]
+        results = getFundLatestBatchFromTencent(tasks)
+        for i in range(2, numRows+1):
+            result = results[i-2]
+            if len(result) > 3:
+                sht_fundInfo.range('C'+str(i)).value = result
                 sht_fundInfo.range('J'+str(i)).value = time.strftime("%d/%m/%Y, %H:%M:%S")
         
     def getMomentumTargets(self):
@@ -239,36 +312,38 @@ class Trade:
         shf.range('A2').value = results  
     
     def getLastTasks(self):
-        targetDate = getLastTradedTime('log.txt')+relativedelta(days=1)
-        print('getLastTasks buildTargetValueTasks targetDateStr {}'.format(dateTimeToDateStr(targetDate)))
-        ordersTable = sheetToDF(self.wb.sheets['Preorders'])
-        ordersTable = self.buildTargetValueTasks(ordersTable, dateTimeToDateStr(targetDate))
-        ordersTable.loc[(ordersTable['Amount']==0) & (ordersTable['Platform']=='定期调平'), 'TradeCode' ] = 3;
-        ordersTable = self.buildMomentumTasks(ordersTable)
-        # momentum 28
-        ordersTable_28  = ordersTable[ordersTable['Remark'] == '自动二八'].copy()
-        ordersTable = ordersTable.drop(ordersTable[ordersTable['Remark'] == '自动二八'].index)
-        ordersTable_28 = ordersTable_28.sort_values(by=['Amount'])
-        ordersTable = pd.concat([ordersTable, ordersTable_28]).reset_index(drop=True)  
-        # momentum industry
-        ordersTable_industry  = ordersTable[ordersTable['Remark'] == '行业轮动'].copy()
-        ordersTable = ordersTable.drop(ordersTable[ordersTable['Remark'] == '行业轮动'].index)
-        ordersTable_industry = ordersTable_industry.sort_values(by=['Amount'])
-        ordersTable = pd.concat([ordersTable, ordersTable_industry]).reset_index(drop=True)
-        # momentum day K
-        ordersTable_dayK  = ordersTable[ordersTable['Remark'] == '日K交易'].copy()
-        ordersTable = ordersTable.drop(ordersTable[ordersTable['Remark'] == '日K交易'].index)
-        ordersTable_dayK = ordersTable_dayK.sort_values(by=['Amount'])
-        ordersTable = pd.concat([ordersTable, ordersTable_dayK]).reset_index(drop=True)
+        # sht = self.wb.sheets['Ordered']
+        # header = sht.range('A1', 'I1').value
+        # numLastRow_Region = sht.range('A1').current_region.last_cell.row
+        # if numLastRow_Region == 1:
+        #     return pd.DataFrame(columns=header)
+        # for i in range(numLastRow_Region+1):
+        #     cellValue = sht.range('A'+str(i+1)).value
+        #     if cellValue == None or cellValue == "None" or cellValue == "nan":
+        #         numLastRow = i
+        #         break
+        # data =  sht.range('A2', 'I'+str(numLastRow)).value
+        # if numLastRow == 2:
+        #     data = [data]
+        df = self.db_sql.getDF('Ordered')
+        df2 = df.loc[:, :'I'].copy()
+        header = df2.loc[0, :].tolist()
+        data = df2.loc[1:, :].values.tolist()
+        df3 = pd.DataFrame(data=data, columns=header)
+        removed_rows = []
+        for i in range(len(df3)):
+            cellValue = df3.loc[i, 'Name']
+            if cellValue == '' or cellValue == None or cellValue == "None" or cellValue == "nan":
+                removed_rows.append(i)
         
-        ordersTable = self.removeInvalidTasks(ordersTable)
-        columns = list(ordersTable.columns)
-        lastColumnIdx = columns.index('Remark')
-        selectedColumns = columns[:lastColumnIdx+1]
-        df_lastTasks = ordersTable[selectedColumns]
-        df_lastTasks = df_lastTasks[df_lastTasks['TradeCode'] > 0]
-        df_lastTasks.loc[:, 'Code'] = df_lastTasks.loc[:, 'Code'].apply(numberToStr)
-        return df_lastTasks.copy().reset_index(drop=True)
+        df4 = df3.drop(df3.index[removed_rows])
+        # df = pd.DataFrame(data=data, columns=header)
+        targetDate = getLastTradedTime('log.txt')+relativedelta(days=1) 
+        if not isSameDate(targetDate, getTodayDate()):
+            return pd.DataFrame(columns=header)
+        else:
+            return df4.copy().reset_index(drop=True)
+
     
     def removeInvalidTasks(self, ordersTable):
         df_latestStockPrices = sheetToDF(self.wb.sheets['股票查询'])
@@ -276,6 +351,14 @@ class Trade:
         df_latestStockPrices = pipeline(df_latestStockPrices)
         ordersTable['upLimit'] = 0
         ordersTable['downLimit'] = 0
+        if not 'credit' in self.credit_account:
+            maxCredit = 1e7
+            maxCash = 1e7
+        else:
+            maxCredit = self.credit_account['credit']*0.99
+            maxCash = self.credit_account['credit_cash']*0.99
+        
+        ordersTable = ordersTable.sort_values(by=['TradeCode',  'Amount'], ascending=False).copy().reset_index(drop=True)
         for i in range(len(ordersTable)):
             amount = ordersTable.loc[i, 'Amount']
             if amount != 0:
@@ -288,6 +371,25 @@ class Trade:
                 ordersTable.loc[i, 'downLimit'] = downLimit
                 if targetPrice < downLimit or targetPrice > upLimit:
                     ordersTable.loc[i, 'TradeCode'] = -2
+                if self.margin_buying_disabled:#only selling
+                    if not any([item in ordersTable.loc[i, 'Name'] for item in ['消费', '创成长', '中概']]): #buy 消费 etc.
+                        if ordersTable.loc[i, 'TradeCode'] in [3, 3.0]: #disable margin buying
+                            ordersTable.loc[i, 'TradeCode'] = -2
+                if any([item in ordersTable.loc[i, 'Name'] for item in ['油气']]): #do not buy any 油气 etc.
+                    if ordersTable.loc[i, 'TradeCode'] in [1, 1.0, 3, 3.0]: #disable buying
+                        ordersTable.loc[i, 'TradeCode'] = -2 
+                money = ordersTable.loc[i, 'Price'] * ordersTable.loc[i, 'Amount']
+                if ordersTable.loc[i, 'TradeCode'] in [1, 1.0]: #cash
+                    if maxCash - money <= 0:
+                        ordersTable.loc[i, 'TradeCode'] = -2 
+                    else:
+                        maxCash -= money
+                if ordersTable.loc[i, 'TradeCode'] in [3, 3.0]: #credit
+                    if maxCredit - money <= 0:
+                        ordersTable.loc[i, 'TradeCode'] = -2 
+                    else:
+                        maxCredit -= money
+                
         return ordersTable
                     
     
@@ -302,11 +404,13 @@ class Trade:
         df_lastTasks['最高'] = 0 
         df_lastTasks['最低'] = 0
         df_lastTasks['成交价'] = 0
-#        df_lastTasks['TradingPotential'] = False
-        
+        df_lastTasks['Price'] = df_lastTasks['Price'].apply(float)
+        df_lastTasks['Amount'] = df_lastTasks['Amount'].apply(float)
+        df_lastTasks['Amount'] = df_lastTasks['Amount'].apply(int)
+
         for i in range(len(df_lastTasks)):
             stockCode   = df_lastTasks.loc[i, 'Code']
-            targetPrice = round(df_lastTasks.loc[i, 'Price'], 3)
+            targetPrice = round(float(df_lastTasks.loc[i, 'Price']), 3)
             price_open  = df_latestStockPrices.loc[df_latestStockPrices['股票代码'] == stockCode, '今开'].values[0]
             price_close = df_latestStockPrices.loc[df_latestStockPrices['股票代码'] == stockCode, '当前价'].values[0]
             price_max   = df_latestStockPrices.loc[df_latestStockPrices['股票代码'] == stockCode, '最高'].values[0]
@@ -381,9 +485,15 @@ class Trade:
         if amount < 0:
             tradeCode = 2.0
             costPrice  = round(df.loc[i, '锁卖成本'], 3)
-            price = max(currentPrice*0.96, costPrice) #make sure to sell but with fail price
-            priceDiff = price/currentPrice-1
-            remark = '趋势卖'
+            if costPrice/currentPrice < 1.06: #make order withoin 6% margin
+                price = max(currentPrice*0.96, costPrice) #make sure to sell but with fail price
+                priceDiff = price/currentPrice-1
+                remark = '趋势卖'
+            else:
+                price = currentPrice
+                tradeCode = -1
+                priceDiff = 0
+                remark = '无操作'
         else:
             price = currentPrice
             tradeCode = -1
@@ -423,10 +533,12 @@ class Trade:
             ordersTable = pd.concat([ordersTable, newOrdersTable]).reset_index(drop=True)
         return ordersTable
     
-    def buildTargetValueTasks(self, ordersTable, targetDateStr):
-        print('Target date {}, today {}, tomorrow {}'.format(targetDateStr, getTodayDateStr(), getTomorrowDateStr()))
+    def buildTargetValueTasks(self, ordersTable, targetDate):
+        self.write_log('Target date {}, today {}, tomorrow {}'.format(\
+         dateTimeToDateStr(targetDate), getTodayDateStr(),
+         getTomorrowDateStr()))
         orderTableHeaders = list(ordersTable.columns)
-        nonSupportedList = list(ordersTable['NonSupported'])
+        nonSupportedList = list(ordersTable['NonSupported'])# margin buying not supported list
         nonSupportedList = [numberToStr(e) for e in nonSupportedList if (e is not None and e != 'None')]
         targetValueSheetNames = ['目标市值两融', '目标市值']
         newOrdersTable = pd.DataFrame(columns=orderTableHeaders)
@@ -434,8 +546,8 @@ class Trade:
         for sheetname in targetValueSheetNames:
             sht = self.wb.sheets[sheetname]
             df  = sheetToDF(sht)
-            df.loc[:, '下期时间'] = df.loc[:, '下期时间'].apply(numberToDateStr)
-            df2 = df[df['下期时间']==targetDateStr].copy().reset_index(drop=True)
+            df.loc[:, '下期时间'] = df.loc[:, '下期时间'].apply(numberToDateTime)
+            df2 = df[df['下期时间']<=targetDate].copy().reset_index(drop=True)
             numRowsStart = len(newOrdersTable)
             if len(df2) > 0:
                 for i in range(len(df2)):
@@ -613,78 +725,248 @@ class Trade:
             sht.range('C2').value = percents    
     
     def reminder(self):
-        sht = self.wb.sheets['平台账本']
-        if sht.range('G33').value > 0.04:
+        def p2f(x):
+            return float(x.strip('%'))/100
+        if p2f(self.db_sql.getValue('平台账本', 'G', 33)) > 0.04:
             self.msg.append('目标市值场外版临时操作')
-#            Helper.sendEmail('临时操作', '目标市值场外版临时操作', 'chenjiayi_344@hotmail.com')
-        if sht.range('G34').value > 0.04:
+        if p2f(self.db_sql.getValue('平台账本', 'G', 34)) > 0.04:
             self.msg.append('目标市值均值回归临时操作')
-#            Helper.sendEmail('临时操作', '目标市值均值回归临时操作', 'chenjiayi_344@hotmail.com')
         tomorrowDate = getTodayDate()+timedelta(days=1)
-        sht1 = self.wb.sheets['目标市值场外版']
-        sht2 = self.wb.sheets['目标市值均值回归']
-        date1_list = getTargetArea(sht1, 'U').values
-        date2_list = getTargetArea(sht2, 'V').values
-        date1_list = [datetime.utcfromtimestamp(np.datetime64(date[0], 's').astype(int)) for date in date1_list]
-        date2_list = [datetime.utcfromtimestamp(np.datetime64(date[0], 's').astype(int)) for date in date2_list]
-        if tomorrowDate in date1_list:
+        date1 = self.db_sql.getValue('目标市值场外版', 'U', 2)
+        date1 = dateStrToDateTime(date1)
+        date2 = self.db_sql.getValue('目标市值均值回归', 'V', 2)
+        date2 = dateStrToDateTime(date2)
+        if tomorrowDate ==  date1:
             self.msg.append('目标市值场外版定时操作')
-#            Helper.sendEmail('定时操作', '目标市值场外版定时操作', 'chenjiayi_344@hotmail.com')
-        if tomorrowDate in date2_list:
+        if tomorrowDate ==  date2:
             self.msg.append('目标市值均值回归定时操作')
-#            Helper.sendEmail('定时操作', '目标市值均值回归定时操作', 'chenjiayi_344@hotmail.com')
-        sht3 = self.wb.sheets['备忘录']    
-        df3  = getTargetArea(sht3, 'A', 'B')
+        df3 = self.db_sql.getDF('备忘录')
+        df3 = df3[['A', 'B']]
+        df3.columns = df3.iloc[0].to_list()
+        df3 = df3[df3.index>0]
+        df3['日期'] = pd.to_datetime(df3['日期'], errors='coerce')
+        df3 = df3.dropna(subset=['日期'])
         df3_task = df3[df3['日期'] == tomorrowDate].copy()
         if len(df3_task) > 0:
             self.msg.append('备忘录:')
-            self.msg.append(df3_task.to_string())
-#            Helper.sendEmail('备忘录', df3_task.to_string(), 'chenjiayi_344@hotmail.com')
+            self.msg.append(df3_task.to_string(index=False))
+        df4 = self.db_sql.getDF('梦想单')
+        df4 = removeMargin(df4)
+        df4.columns = df4.iloc[0]
+        df4 = df4[1:]
+        df4 = df4[['名称', '代码', '当前价格', '目标价格', '目的', '趋势', '满足条件']]
+        df4['满足条件'] = df4['满足条件'].apply(lambda x: x.lower() == 'true')
+        df4_task = df4[df4['满足条件']]
+        if len(df4_task) > 0:
+             self.msg.append('梦想单:')
+             self.msg.append(df4_task.to_string(index=False))
     
     def getOrderedTasks(self, ordersTable):
         return ordersTable[ordersTable['TradeCode'] > 0].copy().reset_index(drop=True)
     
     def writeOrderedTasks(self, orderedTable):
 #        orderedTable = ordersTable[ordersTable['TradeCode'] > 0].copy().reset_index(drop=True)
-        if len(orderedTable) > 0 :
-            targetCols = orderedTable.columns[:9].to_list()
-            orderedTable = orderedTable.loc[:, targetCols]
-            sht = self.wb.sheets['Ordered']
-            sht.clear_contents()
-            sht.range('A1').options(index=False).value = orderedTable
-            sht.range('K1').value = '下单时间'
-            sht.range('L1').value = getTodayDate()
-            sht.range('M1').value = time.strftime("%H:%M:%S")
+        targetCols = orderedTable.columns[:9].to_list()
+        orderedTable = orderedTable.loc[:, targetCols]
+        sht = self.wb.sheets['Ordered']
+        sht.clear_contents()
+        sht.range('A1').options(index=False).value = orderedTable
+        sht.range('K1').value = '准备时间'
+        sht.range('K2').value = '下单时间'
+        sht.range('L1').value = getTodayDate()
+        sht.range('M1').value = time.strftime("%H:%M:%S")
+
+            
+    def writeTradedTasks(self, df_lastTasks_traded):
+#        orderedTable = ordersTable[ordersTable['TradeCode'] > 0].copy().reset_index(drop=True)
+        # if len(df_lastTasks_traded) > 0 :
+            # targetCols = orderedTable.columns[:9].to_list()
+            # orderedTable = orderedTable.loc[:, targetCols]
+        self.write_log('writeTradedTasks')
+        sht = self.wb.sheets['Traded']
+        sht.clear_contents()
+        sht.range('A1').options(index=False).value = df_lastTasks_traded
+        sht.range('J1').value = '确认时间'
+        sht.range('K1').value = getTodayDate()
+        sht.range('L1').value = time.strftime("%H:%M:%S")
             
     def getTotalValue(self):
-        sht = self.wb.sheets['平台账本']
-        summary_value = round(sht.range('O27').value, 2)
-        msg1 = 'Summary: {}'.format(summary_value)
-        if msg1 not in self.msg:
-            self.msg.insert(0, msg1)
+        if self.WBInitialised:
+            sht = self.wb.sheets['平台账本']
+            self.totalValueFromSht = round(sht.range('O27').value, 2)
+        else:
+            self.totalValueFromSht = float(self.db_sql.getValue('平台账本', 'O', 27))
+            
+    
+    def hasTradedToday(self):
+        today = getTodayDate()
+        return dateStrToDateTime(self.db_sql.getValue('Traded', 'K',1)) == today
+    
+    def hasUpdatedOrdersToday(self):
+        today = getTodayDate()
+        return dateStrToDateTime(self.db_sql.getValue('Ordered', 'L',1)) == today
+    
+    def hasOrderedToday(self):
+        flag = False
+        today = getTodayDate()
+        orderedTime = self.db_sql.getValue('Ordered', 'L',2)
+        if len(orderedTime)>0:
+            if dateStrToDateTime(orderedTime) == today:
+                flag = True
+        return flag
+    
+    def prepareDFImgs(self):
+        if self.hasTradedToday():
+            _, df_traded = getDFFromDB(self.db_sql, 'Traded', 0, 8)
+            if len(df_traded)== 0:
+                df_traded.loc[0, :] = 'None'
+            self.imgDict['tradedTable'] = dfToImg(df_traded)
+        if self.hasOrderedToday():
+            _, df_ordered = getDFFromDB(self.db_sql, 'Ordered', 0, 9)
+            self.imgDict['orderedTable'] = dfToImg(df_ordered)
     
     def sendSummary(self):
-        if len(self.imgs) > 0:
+        self.reminder()
+        self.getTotalValue()
+        self.prepareDFImgs()
+        imgOrderKeys = ['Summary', 'tradedTable', 'Seperator', 'orderedTable', 'orderConfirmed']
+        self.imgDict['Seperator'] = strToImg(''.join(['\n']+['-'*100]+['\n']))
+        matchedFlag = True
+        if self.totalValueFromImg > 0:
+            if  self.totalValueFromImg == self.totalValueFromSht or \
+                abs(self.totalValueFromImg-self.totalValueFromSht)<0.1:
+                msg1 = 'Values are matched'
+                self.msg.append(msg1)
+            else:
+                msg1 = 'Alert: Sht {}, Platform {} are not matched!'.format(self.totalValueFromSht, self.totalValueFromImg)
+                self.msg.append(msg1)
+                matchedFlag = False
+                #imgOrderKeys.insert(1, 'totalValue')
+        else:
+            msg1 = 'Sht {}'.format(self.totalValueFromSht)
+            self.msg.append("Platform is not checked this time.")
+        self.imgDict['Summary'] = strToImg(msg1)
+        if self.successfulTrading == -1:
+            self.msg.append("Huatai platform is not used")
+        elif self.successfulTrading == 0:
+            self.msg.append("Orders are made successfully")
+        else:
+            self.msg.append("Failed to make orders")
+        
+        if len(self.imgDict) > 0:
             imgPath = os.path.join(os.getcwd(), 'Task'+getTodayDateStr()+'.png')
-            img = mergeImg(self.imgs)
-            img.save(imgPath)
-            self.imgPath = imgPath
+            imgs = [self.imgDict[key] for key in imgOrderKeys if key in self.imgDict]
+            if len(imgs) > 1:
+                img = mergeImg(imgs)
+                from SelfTradingSystem.core.huataiPlatform2 import trim2
+                img = trim2(img)
+                img.save(imgPath)
+                self.imgPath = imgPath
         msg = ''
         for m in self.msg:
             msg = msg + m + '\n'
-        if len(self.imgPath) > 0:
-            sendEmail('今日汇总 From Simulation', msg, 'chenjiayi_344@hotmail.com', self.imgPath)
+        if len(self.imgPath) > 0 and not matchedFlag:
+            sendEmail('今日汇总', msg, 'chenjiayi_344@hotmail.com', self.imgPath)
         else:
-            sendEmail('今日汇总 From Simulation', msg, 'chenjiayi_344@hotmail.com')
+            sendEmail('今日汇总', msg, 'chenjiayi_344@hotmail.com')
     
+    def updateShtFromPlatform(self, operator):
+        sht = self.wb.sheets['平台账本']
+        todayDate = getTodayDate()
+        sht.range('G22').value = operator['cash']
+        sht.range('G24').value = -1*operator['debit']
+        sht.range('Q26').value = operator['credit']
+        sht.range('Q22:Q24').value = todayDate
+        
+    def updateDBFromPlatform(self, operator):
+        try:
+            modifications = [('平台账本', 'G', 22, str(round(operator['cash'], 2))),
+                             ('平台账本','G', 24, str(round(-1*operator['debit'], 2))),
+                             ('平台账本','Q', 26, str(round(operator['credit'], 2))),
+                             ('平台账本','Q', 27, str(round(operator['credit_cash'], 2))),
+                             ]
+            df_ordered = self.db_sql.getDF('Ordered')
+            if 'orderedTable' in operator:
+                df_ordered_new = operator['orderedTable']
+                df_ordered_new2 = dfToDatabaseDF(df_ordered_new, df_ordered.columns)
+                df_ordered_new2.loc[0, ['K', 'L', 'M']] = df_ordered.loc[0, ['K', 'L', 'M']].copy()
+                df_ordered_new2.loc[1, ['K', 'L', 'M']] = df_ordered.loc[1, ['K', 'L', 'M']].copy()
+                df_ordered_new2.loc[1,  'L'] = dateTimeToDateStr(getTodayDate())
+                df_ordered_new2.loc[1,  'M'] = time.strftime("%H:%M:%S")
+                df_ordered_new2 = df_ordered_new2.fillna('')
+                self.db_sql.resetSubject('Ordered', df_ordered_new2)
+            else:       
+                modifications.append(('Ordered', 'L', 2, dateTimeToDateStr(getTodayDate())))
+                modifications.append(('Ordered', 'M', 2, time.strftime("%H:%M:%S")))
+               
+            self.db_sql.modifySubjects(modifications)
+        except:
+            self.msg.append("Failed to updateDBFromPlatform")
+        
+    def readFinanceFromDB(self):
+        try:
+            self.credit_account['debit'] = float(self.db_sql.getValue('平台账本', 'G',24))*-1
+            self.credit_account['credit'] = float(self.db_sql.getValue('平台账本', 'Q',26))
+            self.credit_account['credit_cash'] = float(self.db_sql.getValue('平台账本', 'Q',27))
+        except:
+            self.msg.append("Failed to readFinanceFromDB")
+    
+    def updateForStreamlit(self):
+        convertShtToDB(self.xlsxName)
+        pass
+    
+    
+    def cleanShtBatch(self):
+        self.calculate()
+        self.cleanSht('目标市值', 'AX', 'BL', 'AU10', 'AU24')
+        self.cleanSht('目标市值两融', 'AX', 'BN', 'AU10', 'AU23')
+        self.calculate()
+    
+    def cleanSht(self, sheetname, colStart, colEnd, feeLoc, feeSumLoc):
+        sht = self.wb.sheets[sheetname]
+        fee = sht.range(feeLoc).value
+        if sht.range(feeSumLoc).value is None:
+            sht.range(feeSumLoc).value = 0
+        valid_list = []
+        numRows = sht.range('A1').current_region.last_cell.row
+        for i in range(2, numRows+1):
+            cell = sht.range('A'+str(i)).value
+            if cell is not None:
+               valid_list.append(cell) 
+            else:
+               break
+        numRows = sht.range(colStart+str(1)).current_region.last_cell.row
+        for i in range(2, numRows+1):
+            cell = sht.range(colStart+str(i)).value
+            if cell is None:
+                break
+            if cell not in valid_list:
+              rangeStr = "{colStart}{i}:{colEnd}{i}".format(colStart=colStart, colEnd=colEnd, i=i)
+              print('Remove {} range {} {}'.format(sheetname, rangeStr, cell))
+              sht.range(rangeStr).api.Delete(xw.constants.DeleteShiftDirection.xlShiftUp)
+
+        self.calculate()
+        sht.range(feeSumLoc).value += fee - sht.range(feeLoc).value 
+        
+
     def calculate(self):
-        self.wb.app.calculate()
+        if self.WBInitialised:
+            self.wb.app.calculate()
     
     def save(self):
-        self.wb.save()
+        if self.WBInitialised:
+            self.wb.save()
     
     def close(self):
-        self.wb.app.kill()
+        # self.wb.app.kill()
+        if self.WBInitialised:
+            if len(self.wb.app.books) != 1:
+               self.wb.close()
+            # close excel application if only one workbook is open
+            else:
+                excel_app = xw.apps.active
+                excel_app.quit()
+        self.WBInitialised = False
 
 def printTable(table):
     msg = tb.tabulate(table.values, table.columns, tablefmt="pipe")
@@ -692,18 +974,15 @@ def printTable(table):
     return msg
 
 def summaryTraded(sysObj, df_lastTasks_traded):
-
-    if len(df_lastTasks_traded) > 0:
-        targetCols = df_lastTasks_traded.columns[[0,1,3,4,5,7,8, -1]]
-        df_lastTasks_traded = df_lastTasks_traded.loc[:, targetCols]
-        df_lastTasks_traded['Price'] = df_lastTasks_traded['Price'].apply(lambda x: round(x, 3))
-        df_lastTasks_traded['PriceDiff'] = df_lastTasks_traded['PriceDiff'].apply(lambda x: '{}%'.format(round(x*100, 2)))
-        print('These traded tasks are written:')
-        printTable(df_lastTasks_traded)
-        # sysObj.imgs.append(dfToImg(df_lastTasks_traded))%TODO
-#        sysObj.msg.append('Traded task:')
-#        sysObj.msg.append(msg2)
-#    Helper.sendEmail('今日汇总', msg1+'\n'+msg2 , 'chenjiayi_344@hotmail.com')
+    targetCols = df_lastTasks_traded.columns[[0,1,3,4,5,7,8, -1]]
+    df_lastTasks_traded = df_lastTasks_traded.loc[:, targetCols]
+    df_lastTasks_traded['Price'] = df_lastTasks_traded['Price'].apply(lambda x: round(x, 3))
+    df_lastTasks_traded['PriceDiff'] = df_lastTasks_traded['PriceDiff'].apply(lambda x: x if type(x) is str else '{}%'.format(round(x*100, 2))) 
+    sysObj.write_log('These traded tasks are written:')
+    msg = printTable(df_lastTasks_traded)
+    sysObj.write_log(msg)
+    sysObj.writeTradedTasks(df_lastTasks_traded)
+            # sysObj.imgDict['tradedTable'] = dfToImg(df_lastTasks_traded)
 
 def callBatchMethod(sysObj, methodStr):
     loopGuard = 3
@@ -711,12 +990,12 @@ def callBatchMethod(sysObj, methodStr):
     while loopGuard > 0:
         try:
             sysObj.batchMethods[methodStr].__call__()
-            print("Updating {} done\n".format(methodStr))
+            sysObj.write_log("Updating {} done".format(methodStr))
             returnCode = 0
             break
         except:
             loopGuard -= 1
-            print("Something is wrong during calling {}, try {} times\n".format(methodStr, loopGuard))
+            sysObj.write_log("Something is wrong during calling {}, try {} times".format(methodStr, loopGuard))
             returnCode = -1
     return returnCode
  
@@ -725,170 +1004,305 @@ def callBatchMethod(sysObj, methodStr):
     from SmartQ_Python import SmartQ_Python
     ordersTable = sheetToDF(sysObj.wb.sheets['Preorders'])
     SmartQ_Python(ordersTable)
-    
 '''
 
-def updatingOnly(sysObj, weekday=1, afterEarlySummary=False):
+def debuggingTradedTasks(df_lastTasks_traded, orderedTable_new):
+    if df_lastTasks_traded is None or orderedTable_new is None:
+        return
+    if len(df_lastTasks_traded) > 0 and len(orderedTable_new) > 0:
+        def f(x):
+            if x.TradeCode in [1, 3]:
+                return int(x.Amount)
+            else: 
+                return -1*int(x.Amount)
+        orderedTable_new['Amount'] = orderedTable_new.apply(f, axis=1)
+        df_new = orderedTable_new.loc[:, ['Name', 'Price', 'Amount', 'Remark']]
+        df_traded = df_lastTasks_traded.loc[:, ['Name', 'Price', 'Amount', 'Remark']]
+        df_new['Price'] = df_new['Price'].apply(lambda x: round(x, 3))
+        df_traded['Price'] = df_traded['Price'].apply(lambda x: round(x, 3))
+        list_new = df_new.values.tolist()
+        list_traded = df_traded.values.tolist()
+        has_duplicated = [l in list_new for l in list_traded]
+        if any(has_duplicated):
+            msg  = 'Traded:\n'
+            msg += printTable(df_traded)
+            msg += '\nNew ordered:\n'
+            msg += printTable(df_new)
+            sendEmail('Debugging: traded and ordered again', msg, 'chenjiayi_344@hotmail.com')
+        pass
+    # df_target = df_lastTasks_traded[(df_lastTasks_traded['Name'] == target) & (df_lastTasks_traded['Remark'] == strategy)]
+    # if len(df_target) > 0:
+        # sendEmail('Debugging', target+strategy, 'chenjiayi_344@hotmail.com')
+
+def checkLastOrdered(sysObj, weekday=1, afterEarlySummary=False):
+    sysObj.batchMethods = {}
+    sysObj.batchMethods['updateMomentums'] = sysObj.updateMomentums
+    sysObj.batchMethods['updateRelativeMomentums'] = sysObj.updateRelativeMomentums
+    sysObj.batchMethods['calculateForMomentumShares'] = sysObj.calculateForMomentumShares
+    sysObj.batchMethods['updateStockSheetLive'] = sysObj.updateStockSheetLive
+    sysObj.batchMethods['updateFundSheetLiveFromTencent'] = sysObj.updateFundSheetLiveFromTencent
+    sysObj.batchMethods['updateGoldPrice'] = sysObj.updateGoldPrice
     exitCode = 0
+    df_lastTasks_traded = None
     t = time.time()
+    if sysObj.hasTradedToday():
+        if not sysObj.hasUpdatedOrdersToday() or afterEarlySummary:
+            sysObj.initialSubjects()
+            # callBatchMethod(sysObj, 'updateFundSheetLiveFromTencent')
+            sysObj.updateFundSheetLiveFromTencent()
+            sysObj.calculate()
+        return exitCode, df_lastTasks_traded
     try:
-#        sysObj = Trade('本金账本.xlsx')
-        sysObj.batchMethods = {}
-        sysObj.batchMethods['updateMomentums'] = sysObj.updateMomentums
-        sysObj.batchMethods['updateRelativeMomentums'] = sysObj.updateRelativeMomentums
-        sysObj.batchMethods['calculateForMomentumShares'] = sysObj.calculateForMomentumShares
-        sysObj.batchMethods['updateStockSheetLive'] = sysObj.updateStockSheetLive
-        sysObj.batchMethods['updateFundSheetLive'] = sysObj.updateFundSheetLive
-        sysObj.batchMethods['updateGoldPrice'] = sysObj.updateGoldPrice
-        print("Read xlsx file done\n")
+        sysObj.initialSubjects()
         isTradingTime = sysObj.atTradingTime()
         if not isTradingTime:
 ## Part 1:
-            print("Updating not at trading time\n")
+            sysObj.write_log("Updating not at trading time")
             nowTimeStru        = datetime.now().timetuple()
             if nowTimeStru.tm_wday != 6 and not afterEarlySummary:
+                sysObj.readFinanceFromDB()
                 hasTraded, df_lastTasks_traded= sysObj.compareWithLastTasks()
             else:
                 hasTraded = False
-#            hasTraded = False 
+            # hasTraded = False 
             if hasTraded: 
-                writeTradedTasks(sysObj, df_lastTasks_traded)
-            callBatchMethod(sysObj, 'updateFundSheetLive')
-            sysObj.calculate()
-            print("Calculating done 0\n")
-            sysObj.getTotalValue()
-            print("GetTotalValue done\n")
-            if hasTraded:  #have to update first to calculate the summary     
                 summaryTraded(sysObj, df_lastTasks_traded)
+                updateTradedTasks(sysObj, df_lastTasks_traded)
+            else:
+                sysObj.write_log("Did not have traded for today")
+            callBatchMethod(sysObj, 'updateFundSheetLiveFromTencent')
+            sysObj.calculate()
+            
 ## Part 2:
-            sysObj.initialSubjects()
-            print("Initializing subjects done\n")
             # callBatchMethod(sysObj, 'updateSheetsV2')
-            sysObj.momentum28Trade()
-            print("Updated for momentum 28 trade\n")
-            sysObj.momentumIndustry()
-            print("Updated for momentum industry\n")
-            if weekday != 5:
-                sysObj.momentumDayKTrade()
-                print("Updated for momentum day K trade\n")
+#            sysObj.momentum28Trade()
+#            sysObj.write_log("Updated for momentum 28 trade")
+            # sysObj.momentumIndustry()
+            # sysObj.write_log("Updated for momentum industry")
+#            if weekday != 5:
+#                sysObj.momentumDayKTrade()
+#                sysObj.write_log("Updated for momentum day K trade")
             if sysObj.atWeekend():
-                print("Have to update momentum at weekends\n")
+                sysObj.write_log("Have to update momentum at weekends")
                 callBatchMethod(sysObj, 'updateMomentums')
                 callBatchMethod(sysObj, 'updateRelativeMomentums')
             else:
-                print("Do not update momentum at weekdays\n")
+                sysObj.write_log("Do not update momentum at weekdays")
             exitCode, tasks_valided = sysObj.calculateForMomentumShares() #write momentum shares
             if exitCode == -1: #move momentum share to sheets['趋势份额']
                 writeMomentTasks(sysObj, tasks_valided)
                 sysObj.calculate()
-                print("Calculating done 1\n")
+                sysObj.write_log("Calculating done 1")
             callBatchMethod(sysObj, 'updateGoldPrice')
-            sysObj.reminder()
             sysObj.calculate()
-            print("Calculating done 2\n")
+            sysObj.write_log("Calculating done 2")
 #            sysObj.save()
-#            print("Saving done 2\n")
+#            sysObj.write_log("Saving done 2")
         else:
-            print("During trading time\n")
+            sysObj.write_log("During trading time")
             callBatchMethod(sysObj, 'updateStockSheetLive')
             sysObj.calculate()
-            print("Calculating done 3\n")
+            sysObj.write_log("Calculating done 3")
 #            sysObj.save()
-#            print("Saving done 3\n")
+#            sysObj.write_log("Saving done 3")
         t_usage = time.time() - t
         finishingMessage = "All tasks are finished in {:.2f} seconds".format(t_usage)
-        print(finishingMessage)       
+        sysObj.write_log(finishingMessage)       
         #autopy.alert.alert(finishingMessage, "Trading System")     
     except SettingWithCopyError:
-        print('handling..')
+        sysObj.write_log('handling..')
         frameinfo = getframeinfo(currentframe())
-        print(frameinfo.lineno)
-    return exitCode
+        sysObj.write_log(frameinfo.lineno)
+    return exitCode, df_lastTasks_traded
 
-
-def orderingOnly(sysObj):
+def updatingOrders(sysObj, targetDate, flagForced=False):
     exitCode = 0
-    sysObj.initialSubjects()
-    targetDate = getTomorrowDate()
-    print('OrderingOnly buildTargetValueTasks targetDateStr {}'.format(dateTimeToDateStr(targetDate)))
-    ordersTable = sheetToDF(sysObj.wb.sheets['Preorders'])
-    ordersTable = sysObj.buildTargetValueTasks(ordersTable,dateTimeToDateStr(targetDate))
-    ordersTable = sysObj.buildMomentumTasks(ordersTable)
-    ordersTable = sysObj.removeInvalidTasks(ordersTable)
-    orderedTable = sysObj.getOrderedTasks(ordersTable)
-    targetCols   = orderedTable.columns[[0,1,3,4,5,7,8 ]]
-    orderedTable_new = orderedTable.loc[:, targetCols]
-    orderedTable_new['Price'] = orderedTable_new['Price'].apply(lambda x: round(x, 3))
-    orderedTable_new['PriceDiff'] = orderedTable_new['PriceDiff'].apply(lambda x: '{}%'.format(round(x*100, 2)))
-    print('These tasks are prapared for order:')
-    printTable(orderedTable_new)
-
-    requiredCredit = 0
-    requiredCash   = 0
-    sht = sysObj.wb.sheets['平台账本']
-    availableCredit = round(sht.range('Q26').value, 2)
-    availableCash   = round(sht.range('Q27').value, 2)
-    for i in range(len(orderedTable)):
-        if orderedTable.loc[i, 'TradeCode'] == 3:
-            requiredCredit += round(orderedTable.loc[i, 'Amount']*orderedTable.loc[i, 'Price'], 2)
-        elif orderedTable.loc[i, 'TradeCode'] == 1:
-            requiredCash += round(orderedTable.loc[i, 'Amount']*orderedTable.loc[i, 'Price'], 2)
-    if requiredCredit + requiredCash > availableCredit + availableCash:
-        msg  = "Required credit {} and cash {}, but available credit {} and cash {}"\
-        .format(requiredCredit, requiredCash, availableCredit, availableCash)
-        sendEmail('Alert', msg, 'chenjiayi_344@hotmail.com')
-        return -1
-    else:
-        if len(orderedTable) > 0:
-            # exitCode, sysObj = SmartQ_Python(sysObj, ordersTable, availableCredit)%TODO
-            if exitCode == 0:
-                sysObj.writeOrderedTasks(orderedTable)
-                sysObj.getTotalValue()
-                sysObj.sendSummary()
-                sysObj.save()
-                sysObj.close() #Autoclose only when confirmaton is implemented
-                print("Closing done 2\n")
-            else:
-                print("Error in SmartQ\n")
+    if not sysObj.hasUpdatedOrdersToday() or flagForced:
+        sysObj.initialSubjects()
+        sysObj.write_log('updatingOrders buildTargetValueTasks targetDateStr {}'.\
+              format(dateTimeToDateStr(targetDate)))
+        ordersTable = sheetToDF(sysObj.wb.sheets['Preorders'])
+        ordersTable = sysObj.buildTargetValueTasks(ordersTable,targetDate)
+        ordersTable = sysObj.buildMomentumTasks(ordersTable)
+        ordersTable = sysObj.removeInvalidTasks(ordersTable)
+        orderedTable = sysObj.getOrderedTasks(ordersTable)
+        targetCols   = orderedTable.columns[[0,1,2,3,4,5,7,8 ]]
+        orderedTable_new = orderedTable.loc[:, targetCols]
+        orderedTable_new['Price'] = orderedTable_new['Price'].apply(lambda x: round(x, 3))
+        orderedTable_new['PriceDiff'] = orderedTable_new['PriceDiff'].apply(lambda x: '{}%'.format(round(x*100, 2)))
+        sysObj.write_log('These tasks are prapared for order:')
+        printTable(orderedTable_new)
+    
+        # requiredCredit = 0
+        # requiredCash   = 0
+        # sht = sysObj.wb.sheets['平台账本']
+        # availableCredit = round(sht.range('Q26').value, 2)
+        # availableCash   = round(sht.range('Q27').value, 2)
+        # for i in range(len(orderedTable)):
+        #     if orderedTable.loc[i, 'TradeCode'] == 3:
+        #         requiredCredit += round(orderedTable.loc[i, 'Amount']*orderedTable.loc[i, 'Price'], 2)
+        #     elif orderedTable.loc[i, 'TradeCode'] == 1:
+        #         requiredCash += round(orderedTable.loc[i, 'Amount']*orderedTable.loc[i, 'Price'], 2)
+        # if requiredCredit + requiredCash > availableCredit + availableCash:
+        #     msg  = "Required credit {} and cash {}, but available credit {} and cash {}"\
+        #     .format(requiredCredit, requiredCash, availableCredit, availableCash)
+        #     sendEmail('Alert', msg, 'chenjiayi_344@hotmail.com')
+        #     return -1, sysObj
+        # else:
+        sysObj.writeOrderedTasks(orderedTable)
+                #sysObj.sendSummary()
     return exitCode, sysObj
+
+def getDFFromDB(db_sql, sht_name, colNum_start, colNum_end):
+    orderedSht = db_sql.getDF(sht_name)
+    columnLetters = [getColumnStr(i+1) for i in range(colNum_start, colNum_end)]
+    orderedTable = orderedSht[columnLetters].copy()
+    columns = orderedTable.head(1).values[0]
+    orderedTable.truncate(after=0)
+    orderedTable = orderedTable.truncate(before=1).reset_index(drop=True)
+    orderedTable.columns = columns
+    nan_value = float("NaN")
+    orderedTable['Name'].replace("", nan_value, inplace=True)
+    orderedTable.dropna(subset = [columns[0]], inplace=True)
+    return orderedSht, orderedTable
+
+# def makeOrders(sysObj):
+#     _, orderedTable = getDFFromDB(sysObj.db_sql, 'Ordered', 0, 9)
+#     orderedTable['TradeCode'] = orderedTable['TradeCode'].apply(float)
+#     orderedTable['Price'] = orderedTable['Price'].apply(float)
+#     orderedTable['Amount'] = orderedTable['Amount'].apply(float)
+#     availableCredit = float(sysObj.db_sql.getValue('平台账本', 'Q', 26)) 
+#     sysObj.totalValueFromSht = float(sysObj.db_sql.getValue('平台账本', 'O', 27))
+#     exitCode, sysObj = operation(sysObj, orderedTable, availableCredit)
+#     if exitCode == 0:
+#         #orderedSht.loc[1, 'L'] = dateTimeToDateStr(getTodayDate())
+#         #orderedSht.loc[1, 'M'] = time.strftime("%H:%M:%S")
+#         #sysObj.db_sql.resetSubject('Ordered', orderedSht)
+#         dateStr = dateTimeToDateStr(getTodayDate())
+#         timeStr =  time.strftime("%H:%M:%S")
+#         modifications = [('L', 2, dateStr), ('M', 2, timeStr)]
+#         sysObj.db_sql.modifySubject('Ordered', modifications)
+#     else:
+#         sysObj.write_log("Error in SmartQ 2")
+#     return exitCode, sysObj
+
             
 
-def runRoutine(weekday=1, afterEarlySummary=False):
-    exitCode = 0
-    db_path = 'Resources.db'
-    sql = Database(db_path)
-    sysObj = Trade('本金账本.xlsx', sql)
-    updatingOnly(sysObj, weekday, afterEarlySummary) 
+def runRoutine(weekday=1, afterEarlySummary=False, margin_buying_disabled=False):
+    exitCode = 0 
+    sql = Database('Resources.db')
+    sysObj = Trade('本金账本.xlsx', sql=sql, margin_buying_disabled=margin_buying_disabled)
+    if sysObj.margin_buying_disabled:
+        sysObj.msg.append("Margin buying disabled")
+    if weekday == 5 and not afterEarlySummary:#update at friday's noon
+        sysObj.msg.append("Weekly summary routine")
+        from SelfTradingSystem.core.huataiPlatform2 import loginN
+        app, operator = loginN(sysObj.pywinauto_app)
+        app.kill(soft=False)#Avoid open platform and excel at the same time
+        sysObj.initialSubjects()
+        sysObj.updateShtFromPlatform(operator)
+        sysObj.totalValueFromImg = operator['totalValue']
+        
+    exitCode, df_lastTasks_traded = checkLastOrdered(sysObj, weekday, afterEarlySummary)
+    if exitCode != 0:
+        raise Exception("Error in checkLastOrdered \n")
+    sysObj.write_log("Updating orders now")
+    targetDate = getTomorrowDate()
+    exitCode, sysObj = updatingOrders(sysObj, targetDate)
+    # debuggingTradedTasks(df_lastTasks_traded, orderedTable_new)
+    if exitCode != 0:
+        raise Exception("Error in updatingOrders \n")
+    
+    if sysObj.WBInitialised:
+        sysObj.calculate()
+        # raise Exception("Debug for different traded result")
+        sysObj.save()
+        sysObj.close() #Autoclose only when confirmaton is implemented
+        sysObj.write_log("Closing done 3")
+        sysObj.updateForStreamlit()
+
     sleep(5)
     if weekday != 5:
-        print("Orerding now")
-        sysObj.save()
-        print("Saving done 11\n")
-        sysObj.close()
-        exitCode = 0
-        pass
-        # subprocess.run(["D:\\Dropbox\\For daily life\\Investment\\RunHuatai.exe"])  
-        # exitCode, sysObj = orderingOnly(sysObj)
-    else:
-        exitCode = 0
-        sysObj.save()
-        print("Saving done 00\n")
-        sysObj.close()
+        if not sysObj.hasOrderedToday():
+            sysObj.write_log("Ordering now")
+            from SelfTradingSystem.core.huataiPlatform2 import loginAndOrder
+            exitCode, sysObj, operator = loginAndOrder(sysObj)# Save and Close during ordering
+            if exitCode == 0:
+                sysObj.updateDBFromPlatform(operator)
+                sleep(10)
+            else:
+                # sysObj.write_log("Error in SmartQ 3")
+                raise Exception("Error in SmartQ 3")
+        else:
+            sysObj.write_log("Made orders already")
+            
     sysObj.sendSummary()
+    # sysObj.updateForStreamlit()
     return exitCode
 
 if __name__ == '__main__':
-#    exitCode = runRoutine()
+    # from system import getTargetTradingTime
+    # logFile = 'log.txt'
+    margin_buying_disabled = True
+    # lastTradedTime = getLastTradedTime(logFile)
+    # targetTradeTime = getTargetTradingTime(lastTradedTime)
+    # exitCode = runRoutine(weekday=1, margin_buying_disabled=margin_buying_disabled)
+    # exitCode = runRoutine(weekday=5, afterEarlySummary=True, margin_buying_disabled=margin_buying_disabled)
+
+
+    # exitCode = runRoutine()
     db_path = 'Resources.db'
     sql = Database(db_path)
     # sql.createDB(xlsx_path, db_path)
-    print(sql.getLastRows('S000985', 10))
-    sleep(5)
-    sql.start()
-    sleep(5)
-    sysObj = Trade('本金账本.xlsx',sql)
-    updatingOnly(sysObj, weekday=1)
-    sysObj.sendSummary()
+    # sysObj.write_log(sql.getLastRows('S000985', 10))
+    # sleep(5)
+    # sql.start()
+    # sleep(5)
+    # xlsx_path = r'D:\Downloads\本金账本.xlsx'
+    sysObj = Trade('本金账本.xlsx',sql, margin_buying_disabled=True)
+    # _, df_ordered = getDFFromDB(sysObj.db_sql, 'Ordered', 0, 9)
+    # from SelfTradingSystem.core.huataiPlatform2 import makeReadyForTrade
+    # makeReadyForTrade()
+    # exitCode, sysObj = orderingOnly(sysObj)
+
+    # checkLastOrdered(sysObj, weekday=1,afterEarlySummary=False)
+    # exitCode = runRoutine(weekday=5, afterEarlySummary=False, margin_buying_disabled=False)
+    # # sysObj.updateMomentums()
+    # # from SelfTradingSystem.core.huataiPlatform2 import makeReadyForTrade
+    # # makeReadyForTrade()
+    # # exitCode, sysObj = orderingOnly(sysObj)
+    # # checkLastOrdered(sysObj)
+    
+    # sysObj.updateForStreamlit()
+    # sht = sysObj.wb.sheets['目标市值两融']
+    # for row in range(2, 382):
+    #     cell = sht.range('AZ'+str(row))
+    #     if type(cell.value) == str:
+    #         cell.value = datetime.strptime(cell.value, "%d/%m/%Y")
+    #         sysObj.write_log('*'+cell.number_format)
+    sysObj.initialSubjects()
+    # sysObj.cleanShtBatch()
+    # sysObj.updateForStreamlit()
+    hasTraded, df_lastTasks_traded= sysObj.compareWithLastTasks()
+    summaryTraded(sysObj, df_lastTasks_traded)
+    # df = sysObj.getLastTasks()
+    # exitCode = checkLastOrdered(sysObj, weekday=1, afterEarlySummary=False)
+    # targetDate = getTomorrowDate()
+    # updatingOrders(sysObj, targetDate)
+    # df_lastTasks = sysObj.getLastTasks()
+  
+    # ordersTable = sheetToDF(sysObj.wb.sheets['Preorders'])
+    # ordersTable = sysObj.buildTargetValueTasks(ordersTable,targetDate)
+    # ordersTable = sysObj.buildMomentumTasks(ordersTable)
+    # ordersTable = sysObj.removeInvalidTasks(ordersTable)
+    # orderedTable = sysObj.getOrderedTasks(ordersTable)
+    # sysObj.updateStockSheetLive()
+    # sysObj.updateFundSheetLiveFromTencent()
+    # sysObj.updateMomentums()
+    # sysObj.updateRelativeMomentums()
+    
+    # checkLastOrdered(sysObj, weekday=1)
+    # sysObj.sendSummary()
 
 
 '''

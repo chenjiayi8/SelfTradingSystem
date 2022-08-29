@@ -21,10 +21,10 @@ methods:
 # from addLibraries import Helper
 from SelfTradingSystem.core.trade import runRoutine
 from SelfTradingSystem.io.database import Database
-# from SelfTradingSystem.core.riskRebalance import runRoutine as checkRiskRebalance
+from SelfTradingSystem.core.riskRebalance import runRoutine as checkRiskRebalance
 from SelfTradingSystem.util.convert import getNowTimeStr
 
-from SelfTradingSystem.util.remindMe import sendEmail
+from SelfTradingSystem.util.remindMe import sendEmailBatch as sendEmail
 from SelfTradingSystem.util.others import (
     getLastTradedTime, sleep
     )
@@ -72,7 +72,7 @@ def writeLastTradedTime(logFile):
         
 def fixTargetTradingTime(targetTradeTime):
     targetTradeTimeDict = datetimeToDict(targetTradeTime)
-    targetTradeTimeDict['Min'] = 30
+    targetTradeTimeDict['Min'] = 00
     targetTradeTimeDict['Second'] = 00
     return dictToDateTime(targetTradeTimeDict)
     
@@ -112,7 +112,7 @@ def monitorTradeSystem():
         targetTradeTime = getTargetTradingTime(lastTradedTime) + relativedelta(minutes=30)
         nowTime = datetime.datetime.now()
         if nowTime > targetTradeTime:
-            sendEmail('Alert From Simulation', 'Trading system failed', 'chenjiayi_344@hotmail.com')
+            sendEmail('Alert', 'Trading system failed', 'chenjiayi_344@hotmail.com')
             sleep(60*30)
         else:
             sleep(60*10)
@@ -139,7 +139,7 @@ if __name__ == '__main__':
             nowTime = datetime.datetime.now()
             if nowTime > targetTradeTime:
                 print('\n')
-                # checkRiskRebalance()
+                checkRiskRebalance()
                 if targetTradeTime.timetuple().tm_wday != 4:
                     print("Starting daily routine\n")
                     exitCode = runRoutine()

@@ -14,7 +14,11 @@ Created on Wed Mar  4 10:35:00 2020
 #tasks_valided = pickle.load(f)
 #f.close()
 import pandas as pd
-from SelfTradingSystem.util.convert import getTodayDate
+import openpyxl as op
+from datetime import time
+from collections import OrderedDict
+from xlwings.constants import AutoFillType
+from SelfTradingSystem.util.convert import getTodayDate, dateTimeToDateStr
 
 def getTargetArea(sht, startCol, endCol=[], startRow=0, endRow=0):
     if len(endCol) > 0:
@@ -113,7 +117,7 @@ sht_config_Dic = {"军工小网格":["A33", "L33", [2,2,1,1,1,2,2,2,2,2,2,2]], #
 letters = list(map(chr, range(ord('A'), ord('Z')+1)))
 colStr_Dic = {}
 colNum_Dic = {}
-for i in range(1, 100):
+for i in range(1, 1000):
     colStr = ''.join(getColumnStr(i))
     colStr_Dic[i] = colStr
     colNum_Dic[colStr] = i
@@ -260,14 +264,17 @@ def sheetWriter(sysObj, sheetStr, input_list, isMomentumShare=False):
         raise ("len of config {} does not match len of sourceValueList {}".format(len(config), len(sourceFormulaList)))
     for i in range(len(sourceFormulaList)):
         config_value = config[i]
+        source_idx   = sourceIdxList[i]
         target_idx   = targetIdxList[i]
-        cell_formula = sourceFormulaList[i]
-        cell_formula_new = moveFormulaForOneRow(cell_formula)
+        # cell_formula = sourceFormulaList[i]
+        # cell_formula_new = moveFormulaForOneRow(cell_formula)
         if config_value > 1:
-            if config_value == 2:
-                sht.range(target_idx).formula = cell_formula_new
-            else:
-                sht.range(target_idx).formula_array = cell_formula_new
+            sht.range(source_idx).api.AutoFill(sht.range(source_idx+':'+target_idx).api, AutoFillType.xlFillDefault)
+            pass #autofill
+            # if config_value == 2:
+            #     sht.range(target_idx).formula = cell_formula_new
+            # else:
+            #     sht.range(target_idx).formula_array = cell_formula_new
         elif config_value == 1:
             sht.range(target_idx).value = input_list[i]
     if isMomentumShare:
@@ -286,7 +293,7 @@ def excelWriter(sysObj, df_row, isMomentumShare=False):
             sheetWriter(sysObj, sheetStr, input_list, isMomentumShare)
     
   
-def writeTradedTasks(sysObj, df_lastTasks_traded):
+def updateTradedTasks(sysObj, df_lastTasks_traded):
 #    df_lastTasks_traded = df_lastTasks_traded.sort_values(by=['Amount'])
     for i in range(len(df_lastTasks_traded)):
         df_row = df_lastTasks_traded.iloc[i].copy()
@@ -297,3 +304,111 @@ def writeMomentTasks(sysObj, tasks_valided):
         df_row = tasks_valided.iloc[i].copy()
         excelWriter(sysObj, df_row, True)
     
+
+
+def toStringWithFormat(cell):
+    value = cell.value
+    number_format = cell.number_format
+    data_type = cell.data_type
+    if number_format == None or value == None:
+        value = ''
+    elif type(value) is bool:
+        value = str(value)
+    elif cell.is_date:
+        if type(value) is not time:
+            value = dateTimeToDateStr(value)
+        else:
+            value = value.strftime("%H:%M:%S")
+    elif data_type in ['s', 'e'] :
+        pass
+    elif number_format in ['0.00', '0.0', '0.00000', '0.000000']:
+        value = '{0:.2f}'.format(value)
+    elif number_format in ['0.00%', '0.0%', '0%', '0.000%']:
+        value = '{0:.2%}'.format(value)
+    elif  number_format in ['0.0000']:
+        value = '{0:.4f}'.format(value)
+    elif  number_format in ['0.000']:
+        value = '{0:.3f}'.format(value)
+    elif  number_format in ['0', '@']:
+        if type(value) == float:
+             value = '{0:.2f}'.format(value)
+        else:
+            value = '{:d}'.format(value)
+    elif number_format == 'General':
+        pass
+    else:
+        print(number_format)
+    return value
+        
+def dfToDatabaseDF(df, columns=None):
+    if columns is None:
+        col_num = list(df.columns)
+        col_str = [colStr_Dic[i+1] for i in col_num]
+    else:
+        col_str = list(columns)
+        
+    df_new = pd.DataFrame(columns=col_str)
+    target_columns = col_str[:len(df.columns)]
+    df_new = df_new.append(dict(zip(target_columns, df.columns)), ignore_index=True)
+    for rowID in df.index:
+       df_new = df_new.append(dict(zip(target_columns, list(df.loc[rowID, :]))), ignore_index=True) 
+
+    return df_new
+    
+
+
+def excelToDFs(xlsxPath):
+    # wb = op.load_workbook(xlsxPath, read_only=True, data_only=True)
+    wb = op.load_workbook(xlsxPath, data_only=True)
+    print("Finishing reading {}".format(xlsxPath))
+    sheetnames = wb.sheetnames
+    dfs = []
+    for sheetname in sheetnames:
+        ws = wb[sheetname]
+        data = []
+        for r in range(1, ws.max_row+1):
+            row_data = []
+            for c in range(1, ws.max_column+1):
+                cell = ws.cell(r, c)
+                row_data.append(toStringWithFormat(cell))
+            data.append(row_data)
+            
+        df = pd.DataFrame.from_records(data)
+        col_num = list(df.columns)
+        col_str = [colStr_Dic[i+1] for i in col_num]
+        df.columns = col_str        
+        dfs.append(df)
+    wb.close()
+    return OrderedDict(zip(sheetnames, dfs))
+
+
+def removeMargin(df):
+    columns = list(df.columns)
+    columns_drop = []
+    for col in columns:
+        col_list = df[col].to_list()
+        cell_empty = [len(cell)==0 for cell in col_list]
+        if all(cell_empty):
+            columns_drop.append(col)
+    rows = list(range(len(df)))
+    rows_drop = []
+    for row in rows:
+        row_list = df.iloc[row].to_list()
+        cell_empty = [len(cell)==0 for cell in row_list]
+        if all(cell_empty):
+            rows_drop.append(row)
+    df = df.drop(columns=columns_drop, index=rows_drop).reset_index(drop=True)
+    return df
+
+if __name__ == '__main__':
+    # xlsxPath = '本金账本.xlsx'
+    # dfs_dict = excelToDFs(xlsxPath)
+    from SelfTradingSystem.io.database import Database
+    from SelfTradingSystem.core.trade import Trade
+    db_path = 'Resources.db'
+    sql = Database(db_path)
+    # sql.createDB(xlsx_path, db_path)
+    # print(sql.getLastRows('S000985', 10))
+    # sleep(5)
+
+    pass

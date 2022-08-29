@@ -6,23 +6,28 @@ Created on Sat Nov 14 23:35:58 2020
 @author: frank
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import time
 import math
 import lxml
 import re
+import os
 
 def getYearFromDate(dateStr):
-    return dateStrToDateStruc(dateStr).tm_year
+    return dateStrToDateStruc(str(dateStr)).tm_year
 
 def getMonthFromDate(dateStr):
-    return dateStrToDateStruc(dateStr).tm_mon
+    return dateStrToDateStruc(str(dateStr)).tm_mon
 
 def getWeekNumFromDate(dateStr):
-    return dateStrToDateTime(dateStr).strftime("%W")
+    return dateStrToDateTime(str(dateStr)).strftime("%W")
 
 def dateStrToDateTime(dateStr):
-    return datetime.strptime(dateStr, "%Y%m%d")
+    return datetime.strptime(str(dateStr), "%Y%m%d")
+
+def dateStrToDate(dateStr):
+    temp = dateStrToDateTime(dateStr)
+    return date(year=temp.year, month=temp.month, day=temp.day)
 
 def dateStrToDateStruc(dateStr):
     return dateStrToDateTime(dateStr).timetuple()
@@ -119,6 +124,19 @@ def rawStockStrToInt(rawStockStr):
     rawStockStr = ''.join(rawStockStr)
     return int(rawStockStr)
 
+def roundFloatToCloseDecimal(float_number):
+    final_float = round(float_number, 4)#default
+    if abs(float_number) > 10:
+        final_float = round(float_number, 2)
+        return final_float
+    if round(float_number,4) == round(float_number, 3):
+        final_float = round(float_number, 3)
+    if round(float_number, 3) == round(float_number, 2):
+        final_float = round(float_number, 2)
+    if round(float_number,2) == round(float_number, 1):
+        final_float = round(float_number, 1)
+    return final_float
+
 def rawTextToNumeric(rawText):
     try:
         rawText = str(rawText)
@@ -126,14 +144,43 @@ def rawTextToNumeric(rawText):
             rawText = rawText.replace(',', '')
         numeric = 0
         if '%' in rawText:
-            rawText = rawText.replace('%', '')
-            numeric = float(rawText)
+            rawText_new = rawText.replace('%', '')
+            numeric = float(rawText_new)
             numeric = round(numeric/100, 4)
         elif '.' in rawText:
-            numeric = float(rawText)
+            numeric = roundFloatToCloseDecimal(float(rawText))
         else:
             numeric = int(rawText)
     except:
-        numeric = 0
+        numeric = rawText
     return numeric
     
+def dateTimeToDateStrAuto(dateStr):
+    try:
+        date = datetime.strptime(dateStr, '%Y-%m-%d %H:%M:%S')
+        return dateTimeToDateStr(date)
+    except:
+        return dateStr
+
+# from SelfTradingSystem.io.database import Database
+if os.name == 'nt':
+    from SelfTradingSystem.io.excel import excelToDFs
+    import sqlite3
+    import pandas as pd
+    
+    def convertShtToDB(xlsx_path):
+        db_path = xlsx_path[:-5]+'.db'
+        try:
+            with sqlite3.connect('Resources.db', isolation_level=None,\
+                         timeout=10, check_same_thread=False) as conn:
+                df_menu = pd.read_sql_query("SELECT * from " + 'Menu', conn)
+            df_dict = excelToDFs(xlsx_path)
+            df_dict.update({'Menu': df_menu})
+            df_dict.move_to_end('Menu', last=False)
+            conn2 = sqlite3.connect(db_path)
+            for table, df in df_dict.items():
+                df.to_sql(table, con=conn2, if_exists='replace', index=False)
+            conn2.commit()
+        except:
+            print("Cannot create DB {}".format(db_path))
+            pass

@@ -12,9 +12,19 @@ from email.mime.image import MIMEImage
 from email.mime.text import MIMEText
 import os
 
-def sendEmail(subject, content, receiverEmail ="j.chen-2@tudelft.nl", imagePath=None):
-    senderEmail = "bensnow0@gmail.com"
-    senderPass  = "aJIntL7&Fx"
+def sendEmailBatch(subject, content, receiverEmail ="j.chen-2@tudelft.nl", imagePath=None):
+    loopguard = 3
+    while loopguard > 0:
+        try:
+            sendEmail(subject, content, receiverEmail, imagePath)
+            loopguard = 0
+        except:
+            loopguard -= 1
+            pass
+        
+def sendEmail(subject, content, receiverEmail, imagePath=None):
+    senderEmail = os.environ['senderEmail']
+    senderPass  = os.environ['senderPass']
     #def sendEmail(subject, content)
     server = smtplib.SMTP('smtp.gmail.com', 587)
     
@@ -42,5 +52,5 @@ def sendEmail(subject, content, receiverEmail ="j.chen-2@tudelft.nl", imagePath=
     
 
 if __name__ == "__main__":
-    sendEmail('Test', 'This is a test email.', 'chenjiayi_344@hotmail.com')
+    pass
 
